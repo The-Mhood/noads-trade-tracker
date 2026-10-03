@@ -1,0 +1,6 @@
+.env
+.env.*
+*.env.local
+poc/poc1-run-*.json
+poc/webhook-received.log.jsonl
+node_modules/
