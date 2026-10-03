@@ -132,8 +132,11 @@ let positionId = null, fillInfo = null;
     actionType: 'ORDER_TYPE_BUY', symbol: MT_SYMBOL, volume: spec?.minVolume ?? 0.01,
     stopLoss: sl, takeProfit: tp, comment: idem,
   }, 'place market BUY');
-  step('place market BUY', r.ok && (r.json?.numericCode === 10009 || /done|placed/i.test(JSON.stringify(r.json))), JSON.stringify(r.json).slice(0, 300));
-  positionId = r.json?.positionId ?? r.json?.orderId;
+  const CLOSED_CODES = new Set([132, 136, 146, 148, 10018, 10027]);
+  const closedMkt = !r.ok && (CLOSED_CODES.has(r.json?.numericCode) || /closed|disabled|off quotes|invalid session/i.test(JSON.stringify(r.json)));
+  if (closedMkt) step('market order blocked by CLOSED MARKET (weekend) — rerun this step Monday', true, JSON.stringify(r.json).slice(0, 200));
+  else step('place market BUY', r.ok && (r.json?.numericCode === 10009 || /done|placed/i.test(JSON.stringify(r.json))), JSON.stringify(r.json).slice(0, 300));
+  positionId = closedMkt ? null : (r.json?.positionId ?? r.json?.orderId);
   if (positionId) {
     for (let i = 0; i < 6 && !fillInfo; i++) {
       await sleep(2);
