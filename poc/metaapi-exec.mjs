@@ -70,16 +70,27 @@ let account = null, tradeHost = null;
   account = (Array.isArray(json) ? json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER);
   if (!account) {
     const txid = randomUUID().replace(/-/g, '');
-    const created = await api('POST', `${PROV}/users/current/accounts`, {
+    const body = {
       name: `ntt-poc-${MT_LOGIN}`, type: 'cloud', login: String(MT_LOGIN),
       password: MT_PASSWORD, server: MT_SERVER, platform: PLATFORM, magic: 279843,
-    }, 'create account', { 'transaction-id': txid });
+    };
+    const created = await api('POST', `${PROV}/users/current/accounts`, body, 'create account', { 'transaction-id': txid });
     step('create account', created.ok, created.ok ? `status ${created.status}` : JSON.stringify(created.json).slice(0, 200));
     if (!created.ok) finish();
-    // MetaApi creates asynchronously (202): the body id may not be queryable yet.
-    // Resolve the real record strictly via the account list.
-    account = null;
-    for (let i = 0; i < 36 && !account?.id; i++) {
+    // MetaApi async protocol: 202 = re-send the SAME request with the SAME
+    // transaction-id until the real result (account or error) surfaces.
+    account = created.json && created.json.id ? created.json : null;
+    for (let i = 0; i < 30 && !account?.id; i++) {
+      await sleep(5);
+      const poll = await api('POST', `${PROV}/users/current/accounts`, body, 'poll create (same transaction-id)', { 'transaction-id': txid });
+      if (poll.json && poll.json.id) { account = poll.json; break; }
+      if (!poll.ok && poll.status !== 202) {
+        step('async create finished with error', false, JSON.stringify(poll.json).slice(0, 400));
+        finish();
+      }
+    }
+    // Fallback: resolve via the account list.
+    for (let i = 0; i < 12 && !account?.id; i++) {
       await sleep(5);
       const l = await api('GET', `${PROV}/users/current/accounts`, null, 'poll list for new account id');
       account = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER) || null;
