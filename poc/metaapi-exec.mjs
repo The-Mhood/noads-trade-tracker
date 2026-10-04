@@ -79,15 +79,18 @@ let account = null, tradeHost = null;
     if (!created.ok) finish();
     // MetaApi async protocol: 202 = re-send the SAME request with the SAME
     // transaction-id until the real result (account or error) surfaces.
-    account = created.json && created.json.id ? created.json : null;
+    account = null;   // NEVER trust the 202 body id — it can be a phantom.
     for (let i = 0; i < 30 && !account?.id; i++) {
       await sleep(5);
       const poll = await api('POST', `${PROV}/users/current/accounts`, body, 'poll create (same transaction-id)', { 'transaction-id': txid });
-      if (poll.json && poll.json.id) { account = poll.json; break; }
+      if (poll.ok && poll.status !== 202 && poll.json && poll.json.id) { account = poll.json; break; }
       if (!poll.ok && poll.status !== 202) {
         step('async create finished with error', false, JSON.stringify(poll.json).slice(0, 400));
         finish();
       }
+      const l = await api('GET', `${PROV}/users/current/accounts`, null, 'list check during tx poll');
+      const found = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER);
+      if (found?.id) { account = found; console.log(`    found account id=${account.id} state=${account.state}`); break; }
     }
     // Fallback: resolve via the account list.
     for (let i = 0; i < 12 && !account?.id; i++) {
