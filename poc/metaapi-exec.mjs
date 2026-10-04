@@ -43,6 +43,7 @@ const log = [];                                   // full audit trail
 const results = [];                               // per-step PASS/FAIL
 const t0 = Date.now();
 const ms = () => `${Date.now() - t0}ms`;
+const idem = `ntt-poc1-${randomUUID().slice(0, 8)}`;
 
 async function api(method, url, body, label) {
   const startedAt = Date.now();
@@ -69,7 +70,7 @@ let account = null, tradeHost = null;
   account = (Array.isArray(json) ? json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER);
   if (!account) {
     const created = await api('POST', `${PROV}/users/current/accounts`, {
-      name: `ntt-poc-${MT_LOGIN}`, type: 'cloud', login: Number(MT_LOGIN),
+      name: `ntt-poc-${MT_LOGIN}`, type: 'cloud', login: String(MT_LOGIN),
       password: MT_PASSWORD, server: MT_SERVER, platform: PLATFORM, magic: 279843,
     }, 'create account');
     step('create account', created.ok, created.ok ? '' : JSON.stringify(created.json).slice(0, 200));
@@ -141,7 +142,6 @@ let quote = null, sizing = null;
 }
 
 // ── 5. min-lot market order with SL/TP + idempotency comment ───────────────
-const idem = `ntt-poc1-${randomUUID().slice(0, 8)}`;
 let positionId = null, fillInfo = null;
 {
   const entry = sizing?.entry ?? quote?.ask ?? quote?.close;
