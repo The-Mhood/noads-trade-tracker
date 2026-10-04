@@ -76,15 +76,16 @@ let account = null, tradeHost = null;
     }, 'create account', { 'transaction-id': txid });
     step('create account', created.ok, created.ok ? `status ${created.status}` : JSON.stringify(created.json).slice(0, 200));
     if (!created.ok) finish();
-    // MetaApi creates asynchronously (202): the response may not carry the id yet.
-    account = created.json && created.json.id ? created.json : null;
-    for (let i = 0; i < 24 && !account?.id; i++) {
+    // MetaApi creates asynchronously (202): the body id may not be queryable yet.
+    // Resolve the real record strictly via the account list.
+    account = null;
+    for (let i = 0; i < 36 && !account?.id; i++) {
       await sleep(5);
       const l = await api('GET', `${PROV}/users/current/accounts`, null, 'poll list for new account id');
       account = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER) || null;
       if (account?.id) console.log(`    found account id=${account.id} state=${account.state}`);
     }
-    if (!account?.id) { step('created account id resolvable', false, 'no account with our login appeared'); finish(); }
+    if (!account?.id) { step('created account id resolvable', false, 'no account with our login appeared in list'); finish(); }
     if (account.state !== 'DEPLOYED') {
       await api('POST', `${PROV}/users/current/accounts/${account.id}/deploy`, {}, 'deploy account');
     }
@@ -94,7 +95,11 @@ let account = null, tradeHost = null;
   for (let i = 0; i < 24 && !deployed; i++) {
     await sleep(5);
     const cur = await api('GET', `${PROV}/users/current/accounts/${account.id}`, null, 'poll account state');
-    account = cur.json || account; deployed = account.state === 'DEPLOYED';
+    if (cur.status === 404) {
+      const l = await api('GET', `${PROV}/users/current/accounts`, null, 're-resolve via list (404 on id)');
+      account = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER) || account;
+    } else account = cur.json || account;
+    deployed = account.state === 'DEPLOYED';
     console.log(`    state=${account.state}`);
   }
   step('account DEPLOYED', deployed, `state=${account.state}`);
