@@ -67,7 +67,11 @@ let account = null, tradeHost = null;
   const { ok, json } = await api('GET', `${PROV}/users/current/accounts`, null, 'list accounts');
   step('list accounts', ok);
   if (!ok) finish();
-  account = (Array.isArray(json) ? json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER);
+  const allAccounts = Array.isArray(json) ? json : [];
+  account = allAccounts.find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER) || allAccounts[0] || null;
+  if (account && String(account.login) !== String(MT_LOGIN)) {
+    console.log(`    adopting existing account: login=${account.login} server=${account.server} platform=${account.platform || '?'} state=${account.state}`);
+  }
   if (!account) {
     const txid = randomUUID().replace(/-/g, '');
     const body = {
