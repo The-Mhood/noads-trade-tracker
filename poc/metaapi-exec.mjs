@@ -45,9 +45,9 @@ const t0 = Date.now();
 const ms = () => `${Date.now() - t0}ms`;
 const idem = `ntt-poc1-${randomUUID().slice(0, 8)}`;
 
-async function api(method, url, body, label) {
+async function api(method, url, body, label, extraHeaders) {
   const startedAt = Date.now();
-  const res = await fetch(url, { method, headers: H, body: body ? JSON.stringify(body) : undefined });
+  const res = await fetch(url, { method, headers: { ...H, ...extraHeaders }, body: body ? JSON.stringify(body) : undefined });
   const text = await res.text();
   let json; try { json = text ? JSON.parse(text) : null; } catch { json = text; }
   const entry = { at: ms(), label, method, url, status: res.status, durationMs: Date.now() - startedAt, response: json };
@@ -69,14 +69,25 @@ let account = null, tradeHost = null;
   if (!ok) finish();
   account = (Array.isArray(json) ? json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER);
   if (!account) {
+    const txid = randomUUID().replace(/-/g, '');
     const created = await api('POST', `${PROV}/users/current/accounts`, {
       name: `ntt-poc-${MT_LOGIN}`, type: 'cloud', login: String(MT_LOGIN),
       password: MT_PASSWORD, server: MT_SERVER, platform: PLATFORM, magic: 279843,
-    }, 'create account');
-    step('create account', created.ok, created.ok ? '' : JSON.stringify(created.json).slice(0, 200));
-    account = created.json;
+    }, 'create account', { 'transaction-id': txid });
+    step('create account', created.ok, created.ok ? `status ${created.status}` : JSON.stringify(created.json).slice(0, 200));
     if (!created.ok) finish();
-    await api('POST', `${PROV}/users/current/accounts/${account.id}/deploy`, {}, 'deploy account');
+    // MetaApi creates asynchronously (202): the response may not carry the id yet.
+    account = created.json && created.json.id ? created.json : null;
+    for (let i = 0; i < 24 && !account?.id; i++) {
+      await sleep(5);
+      const l = await api('GET', `${PROV}/users/current/accounts`, null, 'poll list for new account id');
+      account = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER) || null;
+      if (account?.id) console.log(`    found account id=${account.id} state=${account.state}`);
+    }
+    if (!account?.id) { step('created account id resolvable', false, 'no account with our login appeared'); finish(); }
+    if (account.state !== 'DEPLOYED') {
+      await api('POST', `${PROV}/users/current/accounts/${account.id}/deploy`, {}, 'deploy account');
+    }
   }
   // wait for DEPLOYED
   let deployed = account.state === 'DEPLOYED';
