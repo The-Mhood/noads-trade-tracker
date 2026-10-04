@@ -25,8 +25,20 @@ if (!METAAPI_TOKEN || !MT_LOGIN || !MT_PASSWORD || !MT_SERVER) {
   console.error('METAAPI_TOKEN, MT_LOGIN, MT_PASSWORD, MT_SERVER are required'); process.exit(2);
 }
 
-const PROV = 'https://mt-provisioning-api-v1.agiliumtrade.ai';
 const H = { 'auth-token': METAAPI_TOKEN, 'Content-Type': 'application/json' };
+// MetaApi retired old hosts (POC finding 2026-10-04): probe candidates, use first that answers.
+const PROV_CANDIDATES = [
+  'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai',
+  'https://mt-provisioning-api-v1.agiliumtrade.ai',
+];
+let PROV = null;
+for (const c of PROV_CANDIDATES) {
+  try {
+    const r = await fetch(`${c}/users/current/accounts`, { headers: H });
+    PROV = c; console.log(`provisioning host: ${c} (HTTP ${r.status})`); break;
+  } catch (e) { console.log(`  ${c} unreachable (${e.cause?.code || e.message})`); }
+}
+if (!PROV) { console.error('No MetaApi provisioning host reachable from this network.'); process.exit(2); }
 const log = [];                                   // full audit trail
 const results = [];                               // per-step PASS/FAIL
 const t0 = Date.now();
@@ -75,9 +87,15 @@ let account = null, tradeHost = null;
   }
   step('account DEPLOYED', deployed, `state=${account.state}`);
   if (!deployed) finish();
-  const region = account.region;
-  tradeHost = region ? `https://trading-api-v1.${region}.agiliumtrade.ai` : 'https://trading-api-v1.agiliumtrade.ai';
-  console.log(`    trade host: ${tradeHost}`);
+  const region = account.region || 'new-york';
+  for (const prefix of ['mt-client-api-v1', 'trading-api-v1']) {
+    const host = `https://${prefix}.${region}.agiliumtrade.ai`;
+    try {
+      const pr = await fetch(`${host}/users/current/accounts/${account.id}/account-information`, { headers: H });
+      tradeHost = host; console.log(`    trade host: ${tradeHost} (HTTP ${pr.status})`); break;
+    } catch (e) { console.log(`    ${host} unreachable (${e.cause?.code || e.message})`); }
+  }
+  if (!tradeHost) { console.error('No MetaApi trading host reachable.'); finish(); }
 }
 const A = `${tradeHost}/users/current/accounts/${account.id}`;
 
