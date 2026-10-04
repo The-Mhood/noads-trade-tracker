@@ -1,6 +1,11 @@
+# secrets and run artifacts — never commit
 .env
-.env.*
+.env.local
 *.env.local
+poc/.env.local
 poc/poc1-run-*.json
 poc/webhook-received.log.jsonl
 node_modules/
+
+# templates ARE committed
+!.env.example
