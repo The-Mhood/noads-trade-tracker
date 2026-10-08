@@ -4,7 +4,8 @@
  * Minimum code, zero dependencies, NO production files, DEMO credentials ONLY.
  * Tests the real mechanism: connect → balance/margin → live symbol spec →
  * sizing math → min-lot market order w/ SL/TP + idempotency comment → verify
- * fill → close → limit order → cancel → deliberate broker rejection.
+ * fill → broker P&L vs spec math → close → limit + stop orders → cancel →
+ * deliberate broker rejection.
  *
  * Endpoint shapes follow MetaApi's documented REST API. If a call 404s, that
  * IS a POC finding: fix the path here and record it in POC-1-results.md.
@@ -53,10 +54,30 @@ const t0 = Date.now();
 const ms = () => `${Date.now() - t0}ms`;
 const idem = `ntt-poc1-${randomUUID().slice(0, 8)}`;
 
+// Safety net: an unexpected exception must still write the audit log and say what to check.
+for (const ev of ['uncaughtException', 'unhandledRejection']) {
+  process.on(ev, err => {
+    console.error(`UNEXPECTED ${ev}: ${err?.stack || err}`);
+    console.error(`Check MT5 for open ${MT_SYMBOL} orders/positions before rerunning.`);
+    step('unexpected exception (check MT5)', false, String(err?.message || err).slice(0, 200));
+    finish();
+  });
+}
+
 async function api(method, url, body, label, extraHeaders) {
   const startedAt = Date.now();
-  const res = await fetch(url, { method, headers: { ...H, ...extraHeaders }, body: body ? JSON.stringify(body) : undefined });
-  const text = await res.text();
+  let res, text;
+  try {
+    res = await fetch(url, { method, headers: { ...H, ...extraHeaders }, body: body ? JSON.stringify(body) : undefined });
+    text = await res.text();
+  } catch (e) {
+    // Timeout or reset: a trade POST may still have been processed by the broker.
+    // Record it and fail the step loudly ("outcome UNKNOWN"); never crash mid-trade without an audit log.
+    const reason = String(e.cause?.code || e.message);
+    log.push({ at: ms(), label, method, url, status: 0, durationMs: Date.now() - startedAt, networkError: reason });
+    console.log(`[${ms()}] ${label}: NETWORK ERROR (${reason}) — outcome UNKNOWN for trade calls; check MT5`);
+    return { ok: false, status: 0, json: { networkError: reason }, entry: log[log.length - 1] };
+  }
   let json; try { json = text ? JSON.parse(text) : null; } catch { json = text; }
   const entry = { at: ms(), label, method, url, status: res.status, durationMs: Date.now() - startedAt, response: json };
   log.push(entry);
@@ -169,6 +190,42 @@ async function confirmOrderAbsent(ticket, label) {
   return { ok: false, detail: `ticket ${ticket} still pending; check MT5.` };
 }
 
+// Away-from-market pending order (§17 U1): place min-lot → broker cancel → verify absent → verify no fill.
+// Whenever the broker returned a ticket, cancellation is attempted even if the send result was unclear.
+async function pendingCycle(name, actionType, openPrice, suffix) {
+  const sl = +(openPrice * 0.998).toFixed(spec.digits);
+  const tp = +(openPrice * 1.004).toFixed(spec.digits);
+  const sideOk = actionType === 'ORDER_TYPE_BUY_STOP' ? openPrice > quote.ask : openPrice < quote.bid;
+  const plannedLoss = (openPrice - sl) / spec.tickSize * quote.lossTickValue * spec.minVolume;
+  if (!(sideOk && sl > 0 && sl < openPrice && tp > openPrice && Number.isFinite(plannedLoss)
+    && plannedLoss > 0 && plannedLoss <= RISK_USD + 1e-8)) {
+    step(`${name} risk gate`, false, `planned loss=$${plannedLoss}; risk budget=$${RISK_USD}. No order sent.`); finish();
+  }
+  console.log(`    ${name} min-lot=${spec.minVolume} entry=${openPrice} SL=${sl} TP=${tp} planned loss=$${plannedLoss.toFixed(2)} (budget=$${RISK_USD})`);
+  const r = await api('POST', `${A}/trade`, {
+    actionType, symbol: MT_SYMBOL, volume: spec.minVolume,
+    openPrice, stopLoss: sl, takeProfit: tp, comment: `${idem}-${suffix}`,
+  }, `place ${name}`);
+  const orderId = r.json?.orderId;
+  const placed = r.ok && [10008, 10009].includes(r.json?.numericCode) && !!orderId;
+  step(`place ${name}`, placed, JSON.stringify(r.json).slice(0, 200));
+  if (!orderId) {
+    if (!placed) console.error(`${name} outcome unclear. Check MT5 pending orders before rerunning.`);
+    finish();
+  }
+  const c = await api('POST', `${A}/trade`, { actionType: 'ORDER_CANCEL', orderId }, `cancel ${name}`);
+  step(`cancel ${name}`, tradeDone(c), JSON.stringify(c.json).slice(0, 200));
+  const v = await confirmOrderAbsent(orderId, `verify ${name} absent`);
+  step(`${name} absent after cancellation`, v.ok, v.detail);
+  if (!tradeDone(c) || !v.ok || !placed) {
+    console.error('Check pending orders AND positions in MT5 before another run.'); finish();
+  }
+  const p = await api('GET', `${A}/positions?refreshTerminalState=true`, null, `check ${name} did not fill`);
+  const noFill = p.ok && Array.isArray(p.json) && !p.json.some(x => x.symbol === MT_SYMBOL);
+  step(`${name} did not become a position`, noFill, noFill ? 'no new position' : 'Check MT5: order may have filled.');
+  if (!noFill) finish();
+}
+
 // Reconcile an orphan from an earlier run WITHOUT creating a new order.
 // Never cancel an unrelated ticket and never assume an absent ticket was cancelled.
 {
@@ -264,7 +321,7 @@ let quote = null, sizing = null;
   const canSize = Number.isFinite(lossPerLot) && lossPerLot > 0 && Number.isFinite(lots)
     && lots >= spec.minVolume && lots <= spec.maxVolume && lots * lossPerLot <= RISK_USD + 1e-8;
   step('sizing math on real broker data', canSize,
-    `riskBudget=$${RISK_USD} SL dist=${slDistance.toFixed(4)} loss/lot=$${lossPerLot.toFixed(2)} rawLots=${rawLots.toFixed(4)} → ${lots}; min-lot planned loss=$${(spec.minVolume * lossPerLot).toFixed(2)}`);
+    `riskBudget=$${RISK_USD} SL dist=${slDistance.toFixed(4)} loss/lot=$${lossPerLot.toFixed(2)} rawLots=${rawLots.toFixed(4)} → ${lots}; min-lot planned loss=$${(spec.minVolume * lossPerLot).toFixed(2)} (POC trades min-lot per §17); contractSize×tickSize=${(spec.contractSize * spec.tickSize).toFixed(4)} (expected tick value per lot if USD-quoted) vs lossTickValue=${quote.lossTickValue}`);
   if (!canSize) finish();   // min lot unaffordable or broker limits unsatisfiable
   sizing = { entry, slDistance, ticks, lossPerLot, rawLots, lots };
 }
@@ -301,10 +358,40 @@ let positionId = null, fillInfo = null;
     fillInfo = (Array.isArray(pr.json) ? pr.json : []).find(p => String(p.id) === String(positionId)) || null;
   }
   step('position visible (fill confirmed)', !!fillInfo,
-    fillInfo ? `lots=${fillInfo.volume} openPrice=${fillInfo.openPrice} profit=${fillInfo.profit}` : 'no position found; will attempt close by broker ticket');
-  // POC-1 U4: test whether the idempotency comment survives broker/MetaApi round-trip.
-  if (fillInfo) step('idempotency comment available for reconciliation', fillInfo.comment === idem,
-    `position.comment=${JSON.stringify(fillInfo.comment)} brokerComment=${JSON.stringify(fillInfo.brokerComment)}`);
+    fillInfo ? `lots=${fillInfo.volume} openPrice=${fillInfo.openPrice} slippageVsQuotedAsk=${(fillInfo.openPrice - entry).toFixed(spec.digits)} profit=${fillInfo.profit}` : 'no position found; will attempt close by broker ticket');
+  // POC-1 U4: reconcile by the idempotency comment ALONE (no ticket), as an unknown-state lookup must.
+  const lookup = await api('GET', `${A}/positions?refreshTerminalState=true`, null, 'lookup by idempotency comment');
+  const byComment = Array.isArray(lookup.json) ? lookup.json.filter(x => x.comment === idem) : [];
+  step('idempotency comment lookup finds exactly our position (U4)',
+    lookup.ok && byComment.length === 1 && String(byComment[0].id) === String(positionId),
+    `matches=${byComment.length} ids=${byComment.map(x => x.id).join(',') || 'none'} brokerComment=${JSON.stringify(byComment[0]?.brokerComment)}`);
+}
+
+// ── 5b. broker P&L vs spec math (U3: lot / tick-value / currency semantics) ──
+// Read-only and NON-blocking: a failed check is recorded, and the position is still closed below.
+if (fillInfo) {
+  const sym = encodeURIComponent(MT_SYMBOL);
+  const qa = await api('GET', `${A}/symbols/${sym}/current-price`, null, 'pnl check: quote A');
+  const pp = await api('GET', `${A}/positions?refreshTerminalState=true`, null, 'pnl check: positions');
+  const qb = await api('GET', `${A}/symbols/${sym}/current-price`, null, 'pnl check: quote B');
+  const pos = Array.isArray(pp.json) ? pp.json.find(x => String(x.id) === String(positionId)) : null;
+  const numbers = [qa.json?.bid, qb.json?.bid, qa.json?.lossTickValue, qa.json?.profitTickValue,
+    pos?.openPrice, pos?.volume, pos?.unrealizedProfit, pos?.currentTickValue];
+  if (!(qa.ok && qb.ok && pp.ok && pos && numbers.every(Number.isFinite))) {
+    step('broker P&L matches spec math', false, 'could not read quotes or position fields; position is still closed below');
+  } else {
+    // BUY floating P&L is measured at the bid; which tick value applies depends on the direction of the move.
+    const move = qa.json.bid - pos.openPrice;
+    const tickValue = move >= 0 ? qa.json.profitTickValue : qa.json.lossTickValue;
+    const expected = move / spec.tickSize * tickValue * pos.volume;
+    // Quotes A and B bracket the positions read; allow for price drift between them.
+    const drift = Math.abs(qb.json.bid - qa.json.bid) / spec.tickSize
+      * Math.max(qa.json.lossTickValue, qa.json.profitTickValue) * pos.volume;
+    const tol = 0.05 + drift;
+    const diff = pos.unrealizedProfit - expected;
+    step('broker P&L matches spec math', Math.abs(diff) <= tol,
+      `broker unrealizedProfit=$${pos.unrealizedProfit.toFixed(4)} expected=$${expected.toFixed(4)} |diff|=$${Math.abs(diff).toFixed(4)} tol=$${tol.toFixed(4)}; bid ${qa.json.bid}→${qb.json.bid}; quote tickValue=${tickValue} vs position currentTickValue=${pos.currentTickValue}`);
+  }
 }
 
 // ── 6. close the position ──────────────────────────────────────────────────
@@ -327,41 +414,9 @@ let positionId = null, fillInfo = null;
   if (!gone || !fillInfo) finish();
 }
 
-// ── 7. away-from-market limit order → cancel ───────────────────────────────
-{
-  const openPrice = +(quote.bid * 0.98).toFixed(spec.digits);
-  const sl = +(openPrice * 0.998).toFixed(spec.digits);
-  const tp = +(openPrice * 1.004).toFixed(spec.digits);
-  const plannedLoss = (openPrice - sl) / spec.tickSize * quote.lossTickValue * spec.minVolume;
-  if (!(openPrice > 0 && openPrice < quote.bid && sl > 0 && sl < openPrice && tp > openPrice
-    && Number.isFinite(plannedLoss) && plannedLoss > 0 && plannedLoss <= RISK_USD + 1e-8)) {
-    step('limit min-lot risk gate', false, `planned loss=$${plannedLoss}; risk budget=$${RISK_USD}. No order sent.`); finish();
-  }
-  console.log(`    BUY_LIMIT min-lot=${spec.minVolume} entry=${openPrice} SL=${sl} TP=${tp} planned loss=$${plannedLoss.toFixed(2)} (budget=$${RISK_USD})`);
-  const r = await api('POST', `${A}/trade`, {
-    actionType: 'ORDER_TYPE_BUY_LIMIT', symbol: MT_SYMBOL, volume: spec.minVolume,
-    openPrice, stopLoss: sl, takeProfit: tp, comment: `${idem}-lim`,
-  }, 'place BUY_LIMIT');
-  const orderId = r.json?.orderId;
-  const placed = r.ok && [10008, 10009].includes(r.json?.numericCode) && !!orderId;
-  step('place BUY_LIMIT', placed, JSON.stringify(r.json).slice(0, 200));
-  if (!orderId) {
-    if (!placed) console.error('Pending-order outcome unclear. Check MT5 before rerunning.');
-    finish();
-  }
-  // If a ticket was returned, attempt cleanup even if the result code was unclear.
-  const c = await api('POST', `${A}/trade`, { actionType: 'ORDER_CANCEL', orderId }, 'cancel limit order');
-  step('cancel limit order', tradeDone(c), JSON.stringify(c.json).slice(0, 200));
-  const v = await confirmOrderAbsent(orderId, 'verify limit order absent');
-  step('limit order absent after cancellation', v.ok, v.detail);
-  if (!tradeDone(c) || !v.ok || !placed) {
-    console.error('Check pending orders AND positions in MT5 before another run.'); finish();
-  }
-  const p = await api('GET', `${A}/positions?refreshTerminalState=true`, null, 'check limit did not fill');
-  const noFill = p.ok && Array.isArray(p.json) && !p.json.some(x => x.symbol === MT_SYMBOL);
-  step('limit did not become a position', noFill, noFill ? 'no new position' : 'Check MT5: limit may have filled.');
-  if (!noFill) finish();
-}
+// ── 7. away-from-market pending orders: limit AND stop (§17 U1) → cancel → verify ──
+await pendingCycle('BUY_LIMIT', 'ORDER_TYPE_BUY_LIMIT', +(quote.bid * 0.98).toFixed(spec.digits), 'lim');
+await pendingCycle('BUY_STOP', 'ORDER_TYPE_BUY_STOP', +(quote.ask * 1.02).toFixed(spec.digits), 'stp');
 
 // ── 8. deliberate broker rejection (bad symbol) ────────────────────────────
 {
