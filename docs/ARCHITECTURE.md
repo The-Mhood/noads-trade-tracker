@@ -86,7 +86,7 @@ Responsibilities, in pipeline order:
 
 | Option | How | Pros | Cons |
 |---|---|---|---|
-| **A. MetaApi cloud (recommended v1)** | Our backend calls MetaApi REST; MetaApi hosts the terminal layer. | No terminal/VPS to keep alive; MT4 **and** MT5; works 24/7; free tier = 1 account (perfect for v1 demo-first). | Paid third-party service (~$ from free tier up, usage-based); broker credentials transit their cloud (they are an established, widely used service); one more integration to learn. |
+| **A. MetaApi cloud (recommended v1)** | Our backend calls MetaApi REST; MetaApi hosts the terminal layer. | No terminal/VPS to keep alive; MT4 **and** MT5; works 24/7; MetaApi API listed as free, but hosting is billed per deployed account (good fit for v1 demo-first). | Paid third-party hosting per deployed account (list ~$8.76–$28.74/mo at 730 h, plus pay-as-you-go API charges; no free account tier verified — see docs/poc/POC-1-results.md §8); broker credentials transit their cloud (they are an established, widely used service); one more integration to learn. |
 | **B. Self-hosted bridge EA** | We write an MQL5/MQL4 EA that polls our backend via `WebRequest`; runs on your Windows terminal/VPS. | Free; credentials never leave your machine; full control. | Terminal + machine must stay online (VPS needed for 24/7); MQL code to write/maintain; MT4/MT5 variants; more moving parts to debug. |
 | **C. Python `MetaTrader5` module** | Local Python agent on the MT5 machine. | Free, no EA. | MT5 only; still needs a machine running; not viable for MT4. |
 
@@ -814,7 +814,7 @@ margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  ✓
 | Dimension | Assessment |
 |---|---|
 | Effort to working v1 | Lowest. One adapter (~REST calls: provision account, account info, place/close order, symbol info). No MQL, no Windows. Estimated ~40% less build time than B. |
-| Money cost | Free tier covers **1 account** (v1 demo run is free). Each additional connected account is usage-based (expect roughly $15–25/mo per account — verify exact pricing at sign-up; competitors' flat single-account tiers run ~$12–14/mo). |
+| Money cost | **No free account tier verified** (official pricing checked 2026-10-08). Each deployed account is billed hourly: $0.012/h (g2, ≈ $8.76/mo at 730 h) or $0.039376/h (g1, ≈ $28.74/mo), plus deployment fees and pay-as-you-go API charges. Verify on the owner's billing page. Full figures: docs/poc/POC-1-results.md §8. Competitor figure (~$12–14/mo) not re-verified. |
 | Infra you must run | Only our backend (already required 24/7 for webhooks). No terminal, no VPS for MT. |
 | Platforms | MT4 **and** MT5 through one adapter. |
 | Reliability | Provider hosts the terminal layer (99.95%-class SLA advertised); account reconnect handled by them. Downside: their outage = our outage; mitigated by status API + visible "connection error" state in dashboard. |
@@ -837,7 +837,7 @@ margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  ✓
 
 ### Honest recommendation
 
-Start with **A on your demo account** (free tier → zero cost to prove the full loop end-to-end: webhook → risk engine → real fill). Once the pipeline is proven, adding **B** is an additive adapter, not a rewrite — and you can run both (e.g. MetaApi for demo/propfirm, EA for the account you refuse to put in any cloud). The only reason to pick B-first is if no broker credential may ever touch a third party, full stop.
+Start with **A on your demo account** (one deployed demo account, ≈ $8.76–$28.74/mo at list price, to prove the full loop end-to-end: webhook → risk engine → real fill). Once the pipeline is proven, adding **B** is an additive adapter, not a rewrite — and you can run both (e.g. MetaApi for demo/propfirm, EA for the account you refuse to put in any cloud). The only reason to pick B-first is if no broker credential may ever touch a third party, full stop.
 
 
 ---
