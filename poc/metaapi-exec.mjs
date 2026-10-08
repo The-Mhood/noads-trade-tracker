@@ -72,6 +72,10 @@ let account = null, tradeHost = null;
   if (account && String(account.login) !== String(MT_LOGIN)) {
     console.log(`    adopting existing account: login=${account.login} server=${account.server} platform=${account.platform || '?'} state=${account.state}`);
   }
+  if (account) {
+    account.id = account.id || account._id;   // MetaApi list records may key the id as _id
+    console.log(`    account id=${account.id} region=${account.region || '?'}`);
+  }
   if (!account) {
     const txid = randomUUID().replace(/-/g, '');
     const body = {
