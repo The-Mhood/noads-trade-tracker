@@ -150,9 +150,8 @@ let acctInfo = null;
 // ── 3. live symbol spec ────────────────────────────────────────────────────
 let spec = null;
 {
-  const r = await api('GET', `${A}/symbol-specs?symbol=${encodeURIComponent(MT_SYMBOL)}`, null, 'symbol spec');
-  const list = Array.isArray(r.json) ? r.json : r.json?.specs || [];
-  spec = list[0] || (r.json && !Array.isArray(r.json) ? r.json : null);
+  const r = await api('GET', `${A}/symbols/${encodeURIComponent(MT_SYMBOL)}`, null, 'symbol spec');
+  spec = r.json && !Array.isArray(r.json) ? r.json : (Array.isArray(r.json) ? r.json[0] : null);
   const good = spec && spec.tickSize > 0 && Number(spec.tickValue) > 0 && spec.minVolume > 0 && spec.volumeStep > 0;
   step('symbol spec usable for sizing', r.ok && good,
     spec ? `contractSize=${spec.contractSize} tickSize=${spec.tickSize} tickValue=${spec.tickValue} min=${spec.minVolume} max=${spec.maxVolume} step=${spec.volumeStep}` : JSON.stringify(r.json).slice(0, 200));
@@ -161,8 +160,8 @@ let spec = null;
 // ── 4. quote + §8A sizing math on real data ────────────────────────────────
 let quote = null, sizing = null;
 {
-  const r = await api('GET', `${A}/symbol-quotes?symbol=${encodeURIComponent(MT_SYMBOL)}`, null, 'quotes');
-  const q = Array.isArray(r.json) ? r.json[0] : r.json;
+  const r = await api('GET', `${A}/symbols/${encodeURIComponent(MT_SYMBOL)}/current-price`, null, 'quotes');
+  const q = r.json;
   quote = q;
   const bid = q?.bid ?? q?.close; const ask = q?.ask ?? q?.close;
   step('live quote', r.ok && bid > 0, `bid=${bid} ask=${ask}`);
