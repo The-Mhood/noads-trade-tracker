@@ -6,15 +6,15 @@ On 2026-10-08, all 22 harness steps passed on the owner's MetaQuotes-Demo accoun
 
 ## 0. Status as of 2026-10-09 (read first)
 
-- **Verdict: OPEN.** The 22/22 run of 2026-10-08 is the only complete run. It shows that the broker accepted each order we sent with its SL and TP. It does not show that the broker holds those stops, and it does not show pending orders in the MT5 Trade tab. Later runs on other accounts did not complete (§3B).
+- **Verdict: OPEN.** The 22/22 run of 2026-10-08 is the only complete MetaApi run. It shows that the broker accepted each order sent with SL and TP, but not that the broker stored those stops. A later owner-provided MT5 Trade tab screenshot shows manually placed BUY LIMIT and SELL LIMIT orders; it does not link them to MetaApi (§4.15). Later MetaApi runs on other accounts did not complete (§3B).
 - **The owner's question** (can MetaApi and MT5 place BUY and SELL pending orders that carry their own SL and TP, and do those orders appear in MT5?):
-  - BUY LIMIT and BUY STOP with SL and TP: accepted by the broker (numericCode 10009) and cancelled (10009) on the old account. Stored SL/TP was not read back. Visibility in MT5 while pending was not checked.
-  - SELL pending orders: **not tested** on any account.
-  - Current account: the market BUY was rejected by the broker (10021), so no pending order was placed on it.
-- **MetaApi:** the old account and the London-region account are deleted. The current account is undeployed and disconnected. The owner's MetaApi balance is used up, and the owner does not want to spend more. An undeployed account still carries a small list charge until it is deleted (§8).
-- **MT5 (owner report, 2026-10-09):** flat, with no open or pending positions or orders. The screenshot the owner sent showed History → Orders, not the Trade tab, so the Trade tab view is not yet confirmed.
-- **Decision pending:** Option A (pause and record) or Option C (free manual MT5 test). See §9.
-- **Nothing is running.** No MetaApi calls were made for this update.
+  - MetaApi BUY LIMIT and BUY STOP with SL and TP: accepted by the broker (numericCode 10009) and cancelled (10009) on the old account. Stored SL/TP was not read back; visibility in MT5 while those API orders were pending was not checked.
+  - A manually placed BUY LIMIT and SELL LIMIT are visible as placed in MT5's Trade tab (§4.15). Their S/L and T/P were not visible in the screenshot and have not been confirmed; no SELL pending order has been tested through MetaApi.
+  - Current MetaApi account: the market BUY was rejected by the broker (10021), so no pending order was placed through it.
+- **MetaApi:** the old account and the London-region account are deleted. At last report the current MetaApi account was undeployed and disconnected; no newer API state has been checked. The owner's MetaApi balance was used up, and the owner does not want to spend more. An undeployed account still carries a small list charge until it is deleted (§8).
+- **MT5 (owner screenshots, 2026-10-09):** an earlier History → Orders view accompanied the owner's report of a flat demo login. A later Trade tab view shows two manually placed pending orders, not an empty Trade tab. Current order state and whether either filled or was cancelled need confirmation (§4.15).
+- **Decision pending:** the owner has begun the free manual MT5 test (Option C), but its stop-details and cleanup checks are incomplete. See §9 and the [decision list](POC-1-decisions.md).
+- **No MetaApi calls were made for this documentation update.** The MT5 orders shown are not confirmed cancelled.
 - **Repository provenance (2026-10-09):** This result and its POC harness were merged from `arena/01a0e310-noads-trade-tracker` into `arena/5c731da5-noads-trade-tracker` with the owner's approval. The import involved no MetaApi or MT5 calls, did not rerun the harness, and does not change the OPEN verdict or authorize Phase 1.
 
 ## 1. What was tested
@@ -111,6 +111,8 @@ Only the first row below was a complete run. Account IDs and logins are delibera
 
 **4.14 The harness can trade the wrong account and can create billed accounts.** (a) Account selection (around lines 100–110 of `poc/metaapi-exec.mjs`) adopts the only account on `MT_SERVER` even when its login differs from `MT_LOGIN`, and the run then trades that account. (b) If no account exists on `MT_SERVER`, a full run creates and deploys a new MetaApi account (around lines 118–170), which is billed. (c) `poc/.env.example` sets `MT_PLATFORM=mt4`. The POC runs on MT5, and the harness defaults to mt5 only when the variable is unset, so a copy of the template targets the wrong platform. Proposed fixes are in §7-J. None is applied.
 
+**4.15 Manual MT5 pending orders — partial evidence (owner screenshot shared 2026-10-09).** The owner says the orders were placed directly in a demo MT5 account. The screenshot shows the **Trade** tab, balance/equity/free margin 100,000.00 USD, and two XAUUSD orders marked **placed**: BUY LIMIT at 4136.70 and SELL LIMIT at 4218.00, each displayed as `0.8 / 0`. The screen clock reads 10:52, but the image does not establish the date, broker server, tickets, or order placement time. This confirms the two pending types are visible in MT5, not that MetaApi placed them. The displayed 0.8 differs from the 0.01-lot manual checklist (§9); the screenshot does not show S/L or T/P, so it cannot establish whether either order holds stops. It also does not show order details, subsequent fills, cancellations or an empty Trade tab. The image is in the owner's chat, not stored in the repository. **Owner action:** if still active, cancel both demo orders and confirm no order or position remains; share order details with S/L/T/P and tickets if available without leaving orders active longer. Do not repeat the larger-volume test just to capture evidence.
+
 ## 5. Open items (updated 2026-10-09)
 
 Items 1–4 need either the owner's MT5 History tab (only if that terminal still holds the old demo login) or the MetaApi history API. The API route is closed for the old account, which is deleted; each history call costs 50 credits. Items 7 and 8 are new.
@@ -120,8 +122,8 @@ Items 1–4 need either the owner's MT5 History tab (only if that terminal still
 3. **Realized P&L, position `152740587160`.** Deal profit, commission, swap, close price and displayed server time. Read-only: `GET /users/current/accounts/{id}/history-deals/position/152740587160`, or MT5 History. Same caveat as item 1: the API route is closed for this account.
 4. **Clock.** Compare the displayed deal time in MT5 with the raw-log `tradeStartTime`. A 3-hour difference confirms broker-time labelling. Same caveat as item 1; the raw log is on the owner's machine.
 5. **Pending-order comment lookup.** Needs a new pending order, so it requires owner approval for harness v2 (§7-I). It cannot be tested read-only.
-6. **Current state.** Owner reports flat on 2026-10-09: no open or pending positions or orders. The screenshot showed History → Orders, not the Trade tab, so confirm on the Trade tab.
-7. **Pending orders in MT5 with their own SL and TP (new).** Not observed on any account. Option C (§9) would answer this for one BUY LIMIT and one SELL LIMIT. It does not test MetaApi.
+6. **Current state and cleanup.** The earlier flat report was followed by a Trade tab screenshot with two manually placed pending orders (§4.15). Confirm whether each was cancelled or filled, and show the final Trade tab empty of positions and orders; until then their current state is unknown.
+7. **Pending orders in MT5 with their own SL and TP.** Manually placed BUY LIMIT and SELL LIMIT are visible as placed (§4.15), at a displayed 0.8 volume rather than the planned 0.01. The screenshot does not display S/L or T/P. Ask for each order's detail view, ticket, S/L and T/P if available; this still does not test MetaApi placement.
 8. **Second run on the current account (new).** The session notes mention two runs; only the first run's log is referenced. Confirm what the second run showed, if one was run.
 
 ## 6. Earlier runs — failures and fixes
@@ -173,10 +175,10 @@ Source: https://metaapi.cloud/ (pricing section, fetched 2026-10-08). USD, exclu
 
 ## 9. Gate status and decisions (updated 2026-10-09)
 
-- **POC-1 verdict: OPEN.** The §17 criterion is "all steps succeed on demo, or failures are understood and documented with a concrete architecture-change proposal." The 2026-10-08 run met it for the steps it covered. The later failures (§3B) are documented, but their causes (10021, and the HTTP 500s and timeouts) are not yet understood. The SL/TP read-back, realized P&L, pending-order visibility in MT5 and SELL pending orders are still unverified, so U1 is not closed.
+- **POC-1 verdict: OPEN.** The §17 criterion is "all steps succeed on demo, or failures are understood and documented with a concrete architecture-change proposal." The 2026-10-08 run met it for the steps it covered. The later failures (§3B) are documented, but their causes (10021, and the HTTP 500s and timeouts) are not yet understood. A later manual MT5 screenshot shows BUY and SELL limit orders as placed (§4.15), but not their S/L or T/P or their final state; it does not demonstrate MetaApi SELL placement or stored SL/TP. Realized P&L and UNKNOWN reconciliation are unverified, so U1 is not closed.
 - **Phase 1 remains on hold.**
 - **Option A: pause and record.** Accept the OPEN verdict and this document as the record. Optional: delete the current MetaApi account to stop the undeployed charge. Re-adding a unique account later costs about $2.10. No further API calls.
-- **Option C: free manual MT5 test (no MetaApi).** The owner runs this in the MT5 terminal on the demo login and reports the results:
+- **Option C: free manual MT5 test (no MetaApi) — partial evidence received (§4.15).** The screenshot shows both order types placed but at displayed volume 0.8, not the planned 0.01; S/L, T/P, tickets, and cleanup are unverified. **If the orders are still active, cancel them promptly and confirm no order or position remains.** The original checklist below describes the intended minimal test; do not repeat it at 0.8 merely for documentation:
   1. Confirm the Trade tab shows no positions and no pending orders.
   2. Place a BUY LIMIT, 0.01 lot, about 2% below the market, with SL 0.2% below its price and TP 0.4% above it (the harness rule for BUY orders).
   3. Place a SELL LIMIT, 0.01 lot, about 2% above the market, with SL 0.2% above its price and TP 0.4% below it (the mirror of the same rule).
@@ -186,8 +188,8 @@ Source: https://metaapi.cloud/ (pricing section, fetched 2026-10-08). USD, exclu
 
   Option C answers the MT5 display question for BUY and SELL limit orders. It does not test MetaApi, so the API questions stay open.
 - **Requested from the owner:**
-  1. Choose Option A or Option C.
+  1. Confirm the current state of the two manually placed MT5 orders (§4.15) and whether to complete Option C's stop-details check or pause with the OPEN verdict (Option A).
   2. Accept the OPEN verdict, or give conditions.
-  3. Decide the §7 proposals (A–K). Items A–D change the spec. Item J changes the harness.
+  3. Review the [short decision list](POC-1-decisions.md) for §7 proposals A–K and spec gaps G-1 to G-6. Items A–D change the spec. Item J changes the harness.
   4. Decide §7-I: harness v2 (places demo orders), or read-only checks only.
   5. Give explicit go-ahead to lift the gate. Nothing in Phase 1 starts before this.

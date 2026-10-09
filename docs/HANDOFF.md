@@ -19,24 +19,23 @@
 
 **The owner's open question:** can MetaApi and MT5 place BUY and SELL pending orders that carry their own SL and TP, and do those orders appear in MT5?
 
-- BUY LIMIT and BUY STOP with SL and TP were accepted by the broker on the old demo account (2026-10-08). The stored SL/TP was never read back, and MT5 display while pending was not checked.
-- SELL pending orders: **not tested.**
-- The current account's first market BUY was rejected by the broker with "no quotes" (10021). No pending order was placed on it.
+- MetaApi BUY LIMIT and BUY STOP with SL and TP were accepted by the broker on the old demo account (2026-10-08). The stored SL/TP was never read back, and MT5 display of those API orders while pending was not checked.
+- The owner has since manually placed a BUY LIMIT and SELL LIMIT directly in demo MT5; a Trade tab screenshot shows both as placed (§4.15 in POC-1). Their S/L, T/P, tickets and later cancellation/fill are not visible. **MetaApi SELL pending orders remain untested.**
+- The current MetaApi account's first market BUY was rejected by the broker with "no quotes" (10021). No pending order was placed through it.
 
-**Accounts and money.** The old account and the London-region account are deleted in MetaApi. The current account is undeployed and disconnected. The owner's MetaApi balance is used up, and the owner does not want to spend more. An undeployed account still carries a small list charge (about $0.77/month) until it is deleted. Nothing is running.
+**Accounts and money.** The old account and the London-region account are deleted in MetaApi. At last report the current MetaApi account was undeployed and disconnected; no new API state has been checked. The owner's MetaApi balance was used up, and the owner does not want to spend more. An undeployed account still carries a small list charge (about $0.77/month) until it is deleted. No MetaApi calls were made for this update.
 
-**MT5.** The owner reports the demo login is flat (no open or pending positions or orders), as of 2026-10-09. The screenshot showed the History tab, not the Trade tab, so the Trade tab is not yet confirmed.
+**MT5.** The owner earlier reported the demo login flat on 2026-10-09. A subsequent Trade tab screenshot shows two manually placed XAUUSD pending orders at displayed volume `0.8 / 0` each, not the planned 0.01-lot checklist size. **If still active, cancel both and confirm no orders or positions remain.** See POC-1 §4.15 and §9; do not infer stored stops or cleanup from the screenshot.
 
 ---
 
 ## 2. Decision needed from the owner
 
-Choose one:
+- **Immediate MT5 follow-up:** confirm that both manually placed pending orders have been cancelled and the Trade tab has no orders or positions. If safely available, share each order's S/L, T/P and ticket. The screenshot alone does not prove stops were set; see POC-1 §4.15.
+- **POC path:** Option C (free manual MT5 test) has partial evidence; choose whether to finish its stop-details and cleanup checks or pause and record the OPEN verdict (Option A). Option C does not prove MetaApi placement. Do not incur new MetaApi charges without explicit approval.
+- **Product/engineering decisions:** the [short POC-1 decision list](poc/POC-1-decisions.md) groups proposals A–K and gaps G-1 to G-6 for owner review. None is approved by documenting it. Phase 1 remains on hold.
 
-- **Option A: pause and record.** The OPEN verdict stands. Optionally delete the undeployed MetaApi account to stop its charge (re-adding a unique account costs about $2.10). No more API calls.
-- **Option C: free manual MT5 test.** The owner places one BUY LIMIT and one SELL LIMIT, each with SL and TP, checks the Trade tab shows the stops, and cancels both. The full checklist is in `docs/poc/POC-1-results.md` §9. This tests MT5 only, not MetaApi.
-
-Also open: the POC-1 proposals A–K (§6), the spec gaps G-1 to G-6 (§6), the open items in POC-1 §5, and whether to open a pull request (§4).
+The owner authorized a review PR for the documentation and POC tools, not a merge or a Phase 1 go-ahead (§4).
 
 ---
 
@@ -46,7 +45,8 @@ Also open: the POC-1 proposals A–K (§6), the spec gaps G-1 to G-6 (§6), the 
 |---|---|---|
 | `docs/HANDOFF.md` | This file. | Current (2026-10-09) |
 | `docs/ARCHITECTURE.md` | The plan (§1–§17), decision log (§15), POC gate (§17). | Authoritative. Not changed for POC findings; proposals are pending. |
-| `docs/poc/POC-1-results.md` | MetaApi/MT5 POC: evidence, findings, open items, proposals, costs, gate status. | Updated 2026-10-09 (verdict OPEN). |
+| `docs/poc/POC-1-results.md` | MetaApi/MT5 POC: evidence, findings, open items, proposals, costs, gate status. | Updated 2026-10-09 (manual MT5 evidence partial; verdict OPEN). |
+| `docs/poc/POC-1-decisions.md` | Short owner decision list, grouped from POC-1 §7 and HANDOFF §6. | For review; proposals not approved. |
 | `docs/poc/POC-2-results.md` | TradingView webhook POC: real delivery and receiver replay. | PASS |
 | `poc/metaapi-exec.mjs` | POC-1 harness, zero dependencies. A full run places DEMO orders. `--cancel-order <ticket>` cancels one pending order only. | Works. Safety fixes proposed (POC-1 §7-J). |
 | `poc/webhook-receiver.mjs` | POC-2 receiver: `POST /webhook/:token` on port 8790. Parses, checks the token, dedupes. Logs deliveries to an ignored file. | Used for POC-2. |
@@ -222,6 +222,7 @@ Watch-outs:
 | 2026-10-09 | The owner reports MT5 flat. POC-1 verdict set to OPEN. This handoff saved to the repository. | `58d307b` |
 | 2026-10-09 | Owner requested removal of the unrelated root Todo proposal on the new session branch. It was deleted and pushed; `main` remains unchanged pending a PR. | `fba45e7` |
 | 2026-10-09 | Owner approved merging the project-work branch into this session branch before a PR. Imported its docs and POC tools without running them or changing the POC-1 verdict; Phase 1 remains on hold. | Merge of `58d307b` into `arena/5c731da5-noads-trade-tracker` |
+| 2026-10-09 | Owner shared a Trade tab screenshot showing manually placed BUY LIMIT and SELL LIMIT orders (displayed volume `0.8 / 0` each). Stop values, cleanup and MetaApi placement remain unverified. Requested a short decision list and authorized a review PR. No trade/API calls by the assistant. | POC-1 §4.15; `docs/poc/POC-1-decisions.md` |
 
 ---
 

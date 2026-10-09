@@ -1,0 +1,21 @@
+# POC-1 — decisions for the product owner
+
+**For review · 2026-10-09 · No decisions approved by this document.** Sources: [POC-1 results](POC-1-results.md) §§0, 5, 7, 9; [handoff](../HANDOFF.md) §6; [architecture](../ARCHITECTURE.md) §17. POC-1 remains **OPEN**, POC-2 **PASS**, and Phase 1 is on hold.
+
+## Evidence and immediate follow-up
+
+The owner shared an MT5 **Trade** tab screenshot showing a placed XAUUSD BUY LIMIT at 4136.70 and SELL LIMIT at 4218.00, each displayed as **0.8 / 0**. This establishes that both pending-order types appear in that MT5 view; it does **not** show their S/L, T/P, tickets, broker-stored stops, later fills, or cancellation. The screenshot does not prove MetaApi placed these orders: the owner says they were placed manually. The 0.8 volume differs from the 0.01-lot checklist. **If still active, cancel both demo pending orders and confirm the Trade tab is empty and no position opened.** If available without leaving them active longer, report each order's detail view (ticket and S/L/T/P), MT5 messages and time. Do not send credentials. The screenshot is in the owner's chat, not committed to Git.
+
+## Decisions requested (none applied yet)
+
+| # | Decision for you | Evidence / proposal | Suggested direction for review |
+|---|---|---|---|
+| 1 | **POC gate:** accept OPEN and pause further MetaApi testing, or specify evidence needed before revisiting the gate? Do you want to finish the MT5-only manual check? | POC-1 §9; current manual test is partial. | Keep Phase 1 on hold. MT5 stop details and cancellation can strengthen MT5 evidence but cannot prove the MetaApi path. No paid tests by default. |
+| 2 | **Pending risk lock:** confirm that risk settings remain live until entry triggers, and choose how pre-trigger broker pending orders are cancelled/replaced when settings change. | G-3; owner's entry-trigger rule conflicts with §6 `submitting` lock. | Retain the owner's entry-trigger rule; explicitly design for races between cancel, replace and fill rather than assuming an atomic operation. |
+| 3 | **Sizing and broker read-back:** approve quote-sourced `lossTickValue`/`profitTickValue` with timestamp and refuse invalid data? Add quote/orders/cancel/deal-history adapter operations and verify stored SL/TP after sends? | G-1; proposals A, C, D. | Approve as spec changes before implementation; a sent SL/TP is not proof the broker holds it. Decide how a confirmed mismatch vs an inconclusive read-back is surfaced. |
+| 4 | **Execution outcomes and states:** distinguish broker `numericCode` from transport errors, classify a timed-out trade send as UNKNOWN until reconciled, and map owner-facing stages to internal states? | G-2, G-4; proposal B. | Do not retry UNKNOWN blindly or call it failed. Agree on a single state mapping before code. |
+| 5 | **Audit and state sync:** adopt UTC audit timestamps, request-time quote for slippage, MetaApi comment/clientId limits, and select bounded polling vs streaming for account state? | Proposals E, F, G, H; REST reads consume credits. | Accept the audit constraints; prefer streaming where feasible, with a measured fallback rather than an unconditional 1 Hz REST poll. |
+| 6 | **Further POC work:** approve harness safety changes before any future full run? Later authorize harness v2 and a demo UNKNOWN reconciliation test, or defer them without spending? Is an alert-to-trade test necessary to close the gate? | Proposals I, J, K; G-6. Harness currently may adopt the wrong account or create a billed account; the prior 10021 cause is unknown. | Prioritize J (exact login/server match, explicit billed-create flag, MT5 template, fresh-quote guard) before any run. I/K would place demo orders and need separate approval. No MetaApi calls are authorized here. |
+| 7 | **Editorial correction:** may we remove the stale “vitest — pending approval” label in the architecture? | G-5; §15 #4 already approves vitest. | Approve when making the other agreed spec edits. |
+
+**Separate repository decision:** the PR bringing these documents and the POC tools onto `main` is for review; merging it does not approve the proposals above, a MetaApi call, or Phase 1. Do not run `poc/metaapi-exec.mjs` as-is: proposal J is still unapplied.
