@@ -35,7 +35,7 @@
 - **POC path:** Option C (free manual MT5 test) has partial evidence; choose whether to finish its stop-details and cleanup checks or pause and record the OPEN verdict (Option A). Option C does not prove MetaApi placement. Do not incur new MetaApi charges without explicit approval.
 - **Product/engineering decisions:** the [short POC-1 decision list](poc/POC-1-decisions.md) groups proposals A–K and gaps G-1 to G-6 for owner review. None is approved by documenting it. Phase 1 remains on hold.
 
-The owner authorized a review PR for the documentation and POC tools, not a merge or a Phase 1 go-ahead (§4).
+The owner authorized [review PR #1](https://github.com/The-Mhood/noads-trade-tracker/pull/1) for the documentation and POC tools, not a merge or a Phase 1 go-ahead (§4).
 
 ---
 
@@ -71,7 +71,7 @@ The owner authorized a review PR for the documentation and POC tools, not a merg
 - **Remote:** `origin` = `https://github.com/The-Mhood/noads-trade-tracker` (no credentials in the URL).
 - **Session branch:** `arena/5c731da5-noads-trade-tracker`, based on `main` at `487a43e`. The owner approved importing the project-work branch `arena/01a0e310-noads-trade-tracker` (source tip `58d307b`) into this branch, preserving its history. Only work on and push to this session branch.
 - **Remote `main`:** `487a43e` (owner's upload, 2026-09-27 18:07 UTC). It added the unrelated root `ARCHITECTURE.md` ("Todo App"). That file was deleted on this session branch at `fba45e7`; **it remains on `main` until a PR is merged.** The project plan is `docs/ARCHITECTURE.md`.
-- **Pull requests:** none opened for this session branch as of this update. Opening or merging a PR requires the owner's decision; importing the project work did not authorize a PR or Phase 1.
+- **Pull requests:** [#1](https://github.com/The-Mhood/noads-trade-tracker/pull/1) opened for owner review on 2026-10-09 after explicit approval. It is not merged; merging or starting Phase 1 requires a separate owner decision.
 - **Sandbox clone:** unshallowed before the merge; local history and merge-base are now available.
 - **Other branches:** `arena/01a0e310-noads-trade-tracker` is the project-work source; `arena/01a0e407-noads-trade-tracker` is unrelated. Do not switch to or push to either.
 
@@ -223,6 +223,7 @@ Watch-outs:
 | 2026-10-09 | Owner requested removal of the unrelated root Todo proposal on the new session branch. It was deleted and pushed; `main` remains unchanged pending a PR. | `fba45e7` |
 | 2026-10-09 | Owner approved merging the project-work branch into this session branch before a PR. Imported its docs and POC tools without running them or changing the POC-1 verdict; Phase 1 remains on hold. | Merge of `58d307b` into `arena/5c731da5-noads-trade-tracker` |
 | 2026-10-09 | Owner shared a Trade tab screenshot showing manually placed BUY LIMIT and SELL LIMIT orders (displayed volume `0.8 / 0` each). Stop values, cleanup and MetaApi placement remain unverified. Requested a short decision list and authorized a review PR. No trade/API calls by the assistant. | POC-1 §4.15; `docs/poc/POC-1-decisions.md` |
+| 2026-10-09 | Opened PR #1 against `main` for owner review of the documentation and POC tools; no merge or Phase 1 go-ahead. | https://github.com/The-Mhood/noads-trade-tracker/pull/1 |
 
 ---
 
