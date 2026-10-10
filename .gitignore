@@ -1,0 +1,13 @@
+# secrets and run artifacts — never commit
+.env
+.env.local
+*.env.local
+poc/.env.local
+poc/poc1-run-*.json
+poc/webhook-received.log.jsonl
+node_modules/
+# templates ARE committed
+!.env.example
+# POC-1 v2 local incident/evidence records (may contain demo account metadata)
+poc/.poc1-journals/
+poc/poc1-evidence-*.json
