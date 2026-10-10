@@ -5,7 +5,7 @@ import { selectExactDemoAccount, validateQuote, classifyTradeResponse, protectio
   reconcileCanceledOrder, incidentScope, mayAcceptFutureSignal } from './metaapi-safety.mjs';
 
 const identity = { id: 'expected', login: '123', server: 'MetaQuotes-Demo', platform: 'mt5' };
-const account = { ...identity, state: 'DEPLOYED' };
+const account = { ...identity, state: 'DEPLOYED', connectionStatus: 'CONNECTED' };
 test('exact demo account only: no sole-account fallback or billable create/deploy', () => {
   assert.deepEqual(selectExactDemoAccount([account], identity), account);
   for (const list of [[], [{ ...account, id: 'other' }], [{ ...account, login: '456' }],
@@ -13,6 +13,14 @@ test('exact demo account only: no sole-account fallback or billable create/deplo
     assert.throws(() => selectExactDemoAccount(list, identity));
   }
   assert.throws(() => selectExactDemoAccount([account], { ...identity, server: 'Real' }));
+});
+
+test('L00: disconnected, reconnecting or synchronizing accounts are refused before any send', () => {
+  assert.deepEqual(selectExactDemoAccount([{ ...account, synchronizing: false }], identity).state, 'DEPLOYED');
+  for (const a of [{ ...account, connectionStatus: 'DISCONNECTED' }, { ...account, connectionStatus: 'RECONNECTING' },
+    { ...account, connectionStatus: undefined }, { ...account, synchronizing: true }]) {
+    assert.throws(() => selectExactDemoAccount([a], identity));
+  }
 });
 
 test('directional quote rejects unknown currency, timestamp, stale/future and bad tick value', () => {

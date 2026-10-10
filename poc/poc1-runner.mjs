@@ -40,19 +40,33 @@ const recordTo = (path, row) => {
 
 if (mode === '--review') {
   const rows = rowsFor(arg), last = rows.at(-1), result = [...rows].reverse().find(x => x.event === 'case_result');
-  if (!result || !['case_result', 'read_only_reconciliation'].includes(last.event)) {
-    console.error('Missing completed case or already reviewed; do not clear an incident blindly.'); process.exit(2);
+  const reconciledLast = last?.event === 'read_only_reconciliation';
+  // Completed case: last event is the result or a later read-only reconciliation.
+  // Interrupted journal (crash/SIGKILL before case_result): closable ONLY after a
+  // successful read-only reconciliation, and NEVER with a PASS verdict.
+  const completed = !!result && ['case_result', 'read_only_reconciliation'].includes(last?.event);
+  const interrupted = !result && reconciledLast;
+  if (!completed && !interrupted) {
+    console.error('Missing completed case or read-only reconciliation, or already reviewed; do not clear an incident blindly.'); process.exit(2);
   }
-  const evidence = JSON.parse(readFileSync(extra, 'utf8'));
-  if (evidence.caseId !== result.caseId || evidence.brokerFinalityConfirmed !== true
-    || evidence.zeroExposureConfirmed !== true || !evidence.evidenceRef || !evidence.reviewer
-    || !['PASS','FAIL','UNVERIFIED'].includes(evidence.caseVerdict)
-    || (evidence.caseVerdict === 'PASS' && (result.status !== 'REVIEW_REQUIRED'
-      || evidence.protectionConfirmed !== true || evidence.linkedHistoryVerified !== true
-      || !rows.some(x => x.event === 'final_candidate' && !x.openOrders?.length && !x.positions?.length)))) {
+  const caseId = result?.caseId ?? rows[0]?.caseId;
+  let evidence;
+  try { evidence = JSON.parse(readFileSync(extra, 'utf8')); }
+  catch (e) { console.error(`Evidence file unreadable: ${e.message}`); process.exit(2); }
+  const finalCandidate = [...rows].reverse().find(x => x.event === 'final_candidate');
+  const baseOk = evidence.caseId === caseId && evidence.brokerFinalityConfirmed === true
+    && evidence.zeroExposureConfirmed === true && evidence.evidenceRef && evidence.reviewer
+    && ['PASS','FAIL','UNVERIFIED','BLOCKED'].includes(evidence.caseVerdict);
+  // PASS additionally requires a completed REVIEW_REQUIRED case with confirmed protection,
+  // verified linked history and a well-formed final_candidate showing zero symbol orders/positions.
+  const passOk = evidence.caseVerdict !== 'PASS' || (completed && result.status === 'REVIEW_REQUIRED'
+    && evidence.protectionConfirmed === true && evidence.linkedHistoryVerified === true
+    && !!finalCandidate && Array.isArray(finalCandidate.openOrders) && finalCandidate.openOrders.length === 0
+    && Array.isArray(finalCandidate.positions) && finalCandidate.positions.length === 0);
+  if (!baseOk || !passOk) {
     console.error('Independent evidence/incident resolution insufficient to clear the fence.'); process.exit(2);
   }
-  recordTo(join(dir, arg), { event: 'reviewed', caseId: result.caseId, verdict: evidence.caseVerdict,
+  recordTo(join(dir, arg), { event: 'reviewed', caseId, verdict: evidence.caseVerdict, interruptedJournal: interrupted,
     evidenceRef: String(evidence.evidenceRef).slice(0, 120), reviewer: String(evidence.reviewer).slice(0, 80) });
   console.log('Human evidence review recorded; only the referenced case may be considered, not POC-1 overall PASS.');
   process.exit(0);
@@ -69,11 +83,12 @@ if (!env.METAAPI_TOKEN || !identity.id || !identity.login || identity.platform !
   || !env.METAAPI_PROVISIONING_HOST || !env.METAAPI_TRADE_HOST) {
   console.error('Exact existing MT5 demo identity, token, XAUUSD and approved MetaApi hosts required; no call made.'); process.exit(2);
 }
+const offsetRaw = String(env.POC_BROKER_OFFSET_MINUTES ?? '').trim();
 const config = { identity, symbol: env.MT_SYMBOL, riskUsd: Number(env.POC_RISK_USD || 10),
-  maxQuoteAgeMs: 10000, maxFutureSkewMs: 2000, enableModification: true, brokerOffsetMinutes: Number(env.POC_BROKER_OFFSET_MINUTES) };
-if (!Number.isInteger(config.brokerOffsetMinutes) || env.POC_BROKER_OFFSET_MINUTES === undefined
-  || !(config.riskUsd > 0 && config.riskUsd <= 10)) {
-  console.error('Verified broker UTC offset and POC risk <= $10 required; no call made.'); process.exit(2);
+  maxQuoteAgeMs: 10000, maxFutureSkewMs: 2000, enableModification: true, brokerOffsetMinutes: Number(offsetRaw) };
+// Strict integer string: Number('') === 0 would silently accept an unverified offset as UTC+0.
+if (!/^[+-]?\d{1,3}$/.test(offsetRaw) || !(config.riskUsd > 0 && config.riskUsd <= 10)) {
+  console.error('Verified broker UTC offset (strict integer minutes) and POC risk <= $10 required; no call made.'); process.exit(2);
 }
 let adapter;
 try { adapter = new MetaApiAdapter({ accountId: identity.id, token: env.METAAPI_TOKEN,
@@ -88,10 +103,16 @@ if (mode === '--reconcile') {
     const accounts = await adapter.accounts();
     if (String(accounts[0]?.id ?? accounts[0]?._id) !== String(identity.id)) throw new Error('account mismatch');
     const state = await adapter.snapshot(ticket ?? null); // only GETs; does NOT lift fence
-    recordTo(join(dir, arg), { event: 'read_only_reconciliation', caseId: rows[0]?.caseId, ticket,
-      orders: state.orders.filter(o => String(o.id) === String(ticket)).map(o => ({ id: o.id, state: o.state, currentVolume: o.currentVolume, stopLoss: o.stopLoss, takeProfit: o.takeProfit })),
+    recordTo(join(dir, arg), { event: 'read_only_reconciliation', caseId: rows[0]?.caseId, ticket: ticket ?? null,
+      // Without a ticket (ambiguous POST), surface ALL symbol pending orders and recent symbol
+      // deals so an orphaned order/position is visible; comment is a correlation hint, not proof.
+      orders: ticket
+        ? state.orders.filter(o => String(o.id) === String(ticket)).map(o => ({ id: o.id, state: o.state, currentVolume: o.currentVolume, stopLoss: o.stopLoss, takeProfit: o.takeProfit }))
+        : state.orders.filter(o => o.symbol === config.symbol).map(o => ({ id: o.id, type: o.type, state: o.state, volume: o.volume, currentVolume: o.currentVolume, openPrice: o.openPrice, stopLoss: o.stopLoss, takeProfit: o.takeProfit, comment: o.comment })),
       positions: state.positions.filter(p => p.symbol === config.symbol).map(p => ({ id: p.id, volume: p.volume, stopLoss: p.stopLoss, takeProfit: p.takeProfit })),
-      deals: state.deals.filter(d => String(d.orderId) === String(ticket)).map(d => ({ id: d.id, volume: d.volume })) });
+      deals: ticket
+        ? state.deals.filter(d => String(d.orderId) === String(ticket)).map(d => ({ id: d.id, volume: d.volume }))
+        : state.deals.filter(d => d.symbol === config.symbol).slice(-20).map(d => ({ id: d.id, orderId: d.orderId, positionId: d.positionId, volume: d.volume, time: d.time })) });
     console.log('Read-only reconciliation recorded; status remains UNKNOWN until broker-linked human review.');
   } catch (e) { console.error(`Read-only reconciliation incomplete: ${e.message}`); process.exitCode = 1; }
  } else {
