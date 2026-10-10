@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 // Debug helper: dump the raw MetaApi account list for this user (POC-1).
+// Deliberately disabled: this diagnostic reads account data and may print sensitive fields.
+// Re-enable only in a separately approved, redacted read-only workflow.
+console.error('BLOCKED: MetaApi account diagnostic is disabled; no provider call made.');
+process.exit(2);
 import { readFileSync } from 'node:fs';
 const env = Object.fromEntries(readFileSync(new URL('./.env.local', import.meta.url).pathname, 'utf8')
   .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))

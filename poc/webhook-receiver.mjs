@@ -10,10 +10,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, existsSync } from 'node:fs';
 
 const envPath = new URL('./.env.local', import.meta.url).pathname;
-let token = 'poc-secret-change-me';
+let token = null;
 if (existsSync(envPath)) {
   const m = readFileSync(envPath, 'utf8').match(/^WEBHOOK_TOKEN=(.+)$/m);
   if (m) token = m[1].trim();
+}
+if (!token || token === 'poc-secret-change-me') {
+  console.error('Set a non-placeholder WEBHOOK_TOKEN in poc/.env.local before starting the POC receiver.');
+  process.exit(2);
 }
 const PORT = Number(process.env.POC_PORT || 8790);
 const DEDUPE_TTL_MS = 120_000;
@@ -24,9 +28,7 @@ const server = http.createServer((req, res) => {
   const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
   if (req.method === 'GET' && req.url === '/health') return send(200, { ok: true, service: 'ntt-poc2-webhook-receiver' });
   if (req.method === 'GET' && (req.url === '/' || req.url === '')) {
-    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:8790';
-    const base = (host.startsWith('localhost') || host.startsWith('127.0.0.1')) ? `http://${host}` : `https://${host}`;
-    const webhookUrl = `${base}/webhook/${token}`;
+    const webhookUrl = 'https://example.invalid/webhook/REDACTED'; // never expose token to GET visitors
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(`<!doctype html><html><head><title>NTT POC-2 Webhook Receiver</title>
 <style>body{font-family:system-ui,sans-serif;background:#0e1116;color:#e6e6e6;max-width:720px;margin:3rem auto;padding:0 1rem}
@@ -63,10 +65,14 @@ ol li{margin:.5rem 0}</style></head>
   const m = req.method === 'POST' && req.url?.match(/^\/webhook\/([^/?]+)/);
   if (!m) return send(404, { error: 'not found — POST /webhook/:token' });
 
+  // Reject before reading, hashing, logging or deduplicating untrusted payloads.
+  let urlToken;
+  try { urlToken = decodeURIComponent(m[1]); } catch { return send(400, { error: 'bad URL encoding' }); }
+  if (urlToken !== token) return send(401, { error: 'bad token' });
+
   let body = '';
   req.on('data', c => { body += c; if (body.length > 1e6) req.destroy(); });
   req.on('end', () => {
-    const urlToken = decodeURIComponent(m[1]);
     const fingerprint = createHash('sha256').update(body).digest('hex').slice(0, 16);
     const now = Date.now();
     for (const [k, t] of seen) if (now - t > DEDUPE_TTL_MS) seen.delete(k);
@@ -78,7 +84,7 @@ ol li{margin:.5rem 0}</style></head>
 
     const record = {
       id: randomUUID(), receivedAt: new Date().toISOString(), fingerprint, duplicate,
-      tokenMatch: urlToken === token,                       // POC logs it; production rejects on mismatch
+      tokenMatch: true, // authenticated before body processing
       contentType: req.headers['content-type'] ?? null,
       userAgent: req.headers['user-agent'] ?? null,
       rawBody: body.slice(0, 10_000), parsed, parseError,
@@ -87,7 +93,6 @@ ol li{margin:.5rem 0}</style></head>
     console.log(`[${record.receivedAt}] ${duplicate ? 'DUPLICATE ' : 'received  '} json=${parsed ? 'yes' : 'NO'} tokenMatch=${record.tokenMatch} len=${body.length}`);
 
     // TradingView expects a fast 2xx; mirror what production will do:
-    if (!record.tokenMatch) return send(401, { error: 'bad token' });
     if (parseError) return send(400, { error: 'invalid JSON', detail: parseError });
     return send(200, { status: duplicate ? 'duplicate_ignored' : 'received', fingerprint });
   });
@@ -95,5 +100,5 @@ ol li{margin:.5rem 0}</style></head>
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`POC-2 webhook receiver listening on 0.0.0.0:${PORT}`);
-  console.log(`POST alerts to /webhook/${token} — deliveries logged to ${LOG}`);
+  console.log(`POST alerts to /webhook/<configured-token> — deliveries logged to ${LOG}`);
 });

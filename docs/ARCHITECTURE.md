@@ -1,8 +1,8 @@
 # NoAds Trade Tracker — Architecture & Project Plan
 
 > TradingView alert → automatic MT4/MT5 execution bridge.
-> Status: **PLAN — awaiting product-owner review. No code implemented yet.**
-> Last updated: 2026-09-27
+> Status: **PLAN — policy ratified where noted; provider questions OPEN; Phase 1 product code not implemented.**
+> Last updated: 2026-10-10 (policy decisions ratified; POC-1 OPEN, Phase 1 ON HOLD)
 
 ---
 
@@ -14,7 +14,7 @@
 | **CONTEXT** | The trader analyses markets exclusively on TradingView and executes on MetaTrader 4/5 accounts (live, prop-firm, demo). Today every signal must be re-entered manually in MT4/MT5 — slow, error-prone, and it forces leaving TradingView. TradingView has **no direct MT4/MT5 integration**; the only official outbound channel is **webhook alerts** (requires a TradingView paid plan with webhooks + 2FA). MT4/MT5 accept programmatic orders either through an Expert Advisor inside a running terminal or through a cloud MetaTrader API service (e.g. MetaApi). |
 | **GOAL** | When a TradingView alert fires, the system automatically places the corresponding order on the configured MT4/MT5 account(s) with a size derived from that account's configured **risk percentage**, after verifying sufficient funds/margin — with zero interaction in MetaTrader. The trader never leaves TradingView to trade. |
 | **CONSTRAINTS** | No secrets in the frontend. No new dependencies without owner approval. Single user for v1. Idempotent execution (TradingView may retry webhooks). Every automated action logged and visible. Global kill switch. Explicit UI states everywhere (loading/error/success/empty). Inline form errors, no silent drops. Mobile-first responsive UI. Errors surfaced, never swallowed. |
-| **OUTPUT** | (1) Web dashboard: connect/manage MT accounts, set risk amount & limits, map symbols, generate ready-to-paste TradingView alert messages, watch a live signal log with execution results, kill switch. (2) Backend API: receives TradingView webhooks, validates, sizes, routes, executes, audits. (3) Execution adapter for MT4/MT5. |
+| **OUTPUT** | (1) Web dashboard: connect/manage MT accounts, set per-account risk percentage & limits, map symbols, generate ready-to-paste TradingView alert messages, watch a live signal log with execution results, kill switch. (2) Backend API: receives TradingView webhooks, validates, sizes, routes, executes, audits. (3) Execution adapter for MT4/MT5. |
 
 ---
 
@@ -82,7 +82,7 @@ Responsibilities, in pipeline order:
 6. **Audit log** — every signal and every execution attempt with timestamps, decisions, and broker error codes.
 
 ### Layer 3 — Execution providers (swappable)
-`ExecutionAdapter` interface: `getAccountInfo()`, `getSymbolInfo(symbol)`, `placeOrder()`, `closePosition()`, `getPositions()`.
+`ExecutionAdapter` interface: `getAccountInfo()`, `getSymbolInfo(symbol)`, `getQuote(symbol)`, `getOrders()`, `getPositions()`, `getDealHistory(positionId)`, `cancelOrder(orderId)`, `placeOrder()`, `closePosition()` where supported. Read broker-stored SL/TP from the actual pending order and resulting position; any unavailable capability blocks the affected safety claim rather than silently succeeding. These are proposed interface requirements, not implemented methods.
 
 | Option | How | Pros | Cons |
 |---|---|---|---|
@@ -116,7 +116,7 @@ In-app panel ──────┼──► TradeInstruction (canonical) ──�
 Chart drawing ─────┘                                    ──► Constraints ──► ExecutionAdapter
 ```
 
-Defined in §6 (`TradeInstruction`): symbol, direction, orderType (market/limit/stop), entry, stopLoss (**mandatory**), takeProfit, riskAmount, accountId, source. Every source adapter's only job is to produce this object; validation, risk, sizing, execution are shared 100%.
+Defined in §6 (`TradeInstruction`): symbol, direction, orderType (market/limit/stop), entry, stopLoss (**mandatory**), takeProfit, accountId, source. Resolve monetary risk per account from its percentage profile; never accept a dollar amount per trade from the instruction. Every source adapter's only job is to produce this object; validation, risk, sizing, execution are shared 100%.
 
 ### 3A.3 Drawing classification rules (v2 — no accidental trades)
 
@@ -319,6 +319,7 @@ interface Account {
   adapterRef: string;           // id of the account in the execution provider (e.g. MetaApi account id)
   enabled: boolean;             // OFF = excluded from NEW fan-out trades. Owner rule:
                                 // toggling OFF never cancels or closes open trades.
+  incidentIds: string[];        // persisted fences evaluated per submission; independent accounts need not share a block
   risk: AccountRiskProfile;     // fan-out sizes each account at ITS OWN risk (see below)
   status: AccountStatus;        // runtime; recomputed on heartbeat, not trusted from storage
   createdAt: string;
@@ -330,6 +331,21 @@ type OrderType = 'market' | 'limit' | 'stop';
 type Direction = 'buy' | 'sell';
 type InstructionSource = 'tv_alert' | 'in_app_panel' | 'chart_drawing';
 
+// Persist each incident separately from a trade/order and evaluate its scope
+// BEFORE fan-out or submission. Missing isolation proof defaults to account scope.
+interface IncidentFence {
+  id: string;
+  cause: 'unknown_exposure' | 'protection' | 'shared_dependency';
+  scope: 'setup' | 'account' | 'shared_service';
+  setupId?: string;             // only for objectively proven setup isolation
+  affectedAccountIds: string[]; // shared failure = all dependent accounts; unknown map blocks all
+  state: 'blocked' | 'reconciled_waiting_owner' | 'owner_resumed';
+  evidenceRefs: string[];       // timestamped account exposure, margin, state, calculation, protection proofs
+  openedAt: string;
+  resolvedAt?: string;
+  resumedAt?: string;           // separate owner event; never dispatch on this transition
+}
+
 interface TradeInstruction {
   id: string;
   source: InstructionSource;    // recorded for audit; execution layer ignores it
@@ -340,11 +356,9 @@ interface TradeInstruction {
   entry?: number;               // required for limit/stop; market uses live price
   stopLoss: number;             // MANDATORY (decision #2) — missing SL ⇒ reject
   takeProfit?: number;
-  riskAmount: number;           // RESOLVED monetary risk ($), stamped at trigger time from
-                                // the target account's AccountRiskProfile (percent × basis
-                                // balance). An optional explicit-dollar override in the alert
-                                // payload exists as a power feature; otherwise the user never
-                                // types a dollar risk per trade.
+  // Monetary risk is resolved per account from AccountRiskProfile; never accept
+  // a dollar-risk override from an alert or user. A provisional pending-order
+  // revision is distinct from the actual broker-accepted revision at fill.
   accountId?: string;           // OPTIONAL explicit single-account override (power feature);
                                 // absent ⇒ fan out to ALL enabled accounts (owner rule)
   createdAt: string;
@@ -358,7 +372,7 @@ interface TradeInstruction {
 // Aggregation across fan-out executions:
 //   executed = all target accounts filled · partial = some succeeded, some rejected/failed
 //   rejected = rejected before any account was attempted · failed = attempted everywhere, none filled
-type SignalStatus = 'received' | 'validated' | 'executed' | 'partial' | 'rejected' | 'failed';
+type SignalStatus = 'received' | 'validated' | 'executed' | 'partial' | 'rejected' | 'failed' | 'unknown'; // an unknown account cannot aggregate as definitive success/failure
 
 interface Signal {
   id: string;                   // uuid
@@ -380,33 +394,45 @@ interface Signal {
 //    validated ─x→ rejected_invalid    (bad payload, unknown symbol, missing SL)
 //    sized     ─x→ rejected_risk       (kill switch, limits, lot constraints unsatisfiable)
 //    sized     ─x→ rejected_margin     (insufficient margin — shown on the ❌ card)
-//    submitting ─x→ failed_timeout / rejected_broker (broker error verbatim)
-//    submitting ─?→ unknown              (connection lost mid-send: outcome UNKNOWN,
-//                                         never assumed failed — reconcile before deciding)
+//    pre-send  ─x→ failed_pre_submit (only with proof request never left)
+//    broker result ─x→ rejected_broker (definitive correlated numericCode)
+//    send/cancel/replace ─?→ unknown (ambiguous timeout, HTTP error, conflict;
+//                                     never blindly retry, preserve incident fence)
 //
 //  Terminal states never silently transition out. If MT5 rejects it,
 //  the record says NOT EXECUTED — the app never pretends otherwise.
 //  If the outcome is unknowable, the record says UNKNOWN: the reconciler
-//  queries the broker (every order's comment carries our idempotency key)
-//  until it resolves to filled/rejected — or escalates to the user with a ⚠️ card.
+//  queries orders/positions/deals by ticket and bounded correlation identifiers.
+//  A comment can be altered and is not a broker exactly-once guarantee.
+//  Unresolved evidence remains UNKNOWN with the incident fence in force; escalate to owner.
 //
-//  EXECUTION LOCK BOUNDARY (owner directive): everything before 'submitting' is
-//  PENDING — account risk settings may still change, and our managed UNFILLED broker
-//  orders are cancel+replaced at the new size (SL/TP levels preserved; a fill racing
-//  the replace wins and locks). From entry trigger ('submitting' onward) the parameters
-//  are frozen into riskSnapshot + sizing; later changes to risk %, basis mode,
-//  reference balance, or account availability never alter a triggered/running order.
+//  EXECUTION LOCK BOUNDARY: broker-side pending orders commit volume before fill.
+//  Desired risk remains live while untriggered, but a fill may use the LAST
+//  BROKER-CONFIRMED order revision during cancel/reconcile; record actual execution
+//  and deviation from latest desired risk. Lock filled quantity at actual trigger;
+//  never claim pending placement ('submitting') equals the entry trigger.
+//  Persist a scope-aware incident fence: UNKNOWN exposure or unverified/mismatched
+//  SL/TP blocks the affected account unless objective evidence proves setup-only
+//  isolation (including unaffected account exposure, shared margin, state and
+//  calculations); shared service failure blocks all dependent accounts. When
+//  isolation cannot be proven, widen the fence. Resolve exposure/protection
+//  before a separately authorized resumption (or authoritative zero exposure).
+//  Unblocking discards stale intent and NEVER sends, replays or replaces an order.
 
 type ExecutionStatus =
   | 'received' | 'validated' | 'sized' | 'awaiting_confirm'
   | 'submitting' | 'submitted' | 'partial_filled' | 'filled'
   | 'rejected' | 'failed' | 'unknown' | 'closed';
+// Additional orthogonal, persisted states: cancel_requested, cancel_acknowledged,
+// reconciling, final_canceled/partial/filled; protectionStatus = confirmed |
+// mismatched | unverified | not_applicable; incident fence = blocked |
+// reconciled_waiting_owner | owner_resumed. None implies a trade on transition.
 
 interface Execution {
   id: string;
   signalId: string;             // FK → Signal
   accountId: string;            // FK → Account
-  idempotencyKey: string;       // = signal fingerprint + accountId → duplicate-order protection
+  idempotencyKey: string;       // correlation aid, NOT broker-enforced exactly-once; durable fence and reconciliation required
   brokerSymbol: string;
   instruction: TradeInstruction;  // snapshot of exactly what was sent
   riskSnapshot?: {              // EXECUTION LOCK (owner directive): frozen at trigger time
@@ -435,15 +461,19 @@ interface SizingResult {
   slDistance: number;           // |entry − SL| in price units
   ticks: number;                // slDistance / tick_size
   lossPerLot: number;           // account-currency loss for 1.00 lot
-  rawLots: number;              // riskAmount / lossPerLot (unrounded)
+  rawLots: number;              // resolved monetaryRisk / lossPerLot (unrounded)
   lots: number;                 // final, clamped value actually sent
   clamped: boolean;             // true if min/max/step changed rawLots
   marginRequired: number;
   freeMarginAtCheck: number;
   symbolSpec: {                 // broker/contract facts used (audit trail)
-    contractSize: number; tickSize: number; tickValue: number;   // tickValue in account currency
+    contractSize: number; tickSize: number;
     volumeMin: number; volumeMax: number; volumeStep: number;
   };
+  quoteSnapshot: { at: string; bid: number; ask: number;
+    lossTickValue: number; profitTickValue: number; source: string;
+    accountCurrency: string; conversionRate?: number; conversionAt?: string;
+  }; // values/FX verified and fresh; numeric ages pending provider review
 }
 
 // ─── Settings (per user) ─────────────────────────────────────────────
@@ -586,7 +616,7 @@ noads-trade-tracker/
 │   │   │   │                         # each outputs a TradeInstruction or an explicit rejection
 │   │   │   └── alertInput.ts         # TradingView webhook payload → TradeInstruction (untrusted input)
 │   │   ├── dedupe.ts                 # fingerprint TTL store
-│   │   ├── reconciler.ts             # 'unknown' executions → poll broker by idempotency-key comment
+│   │   ├── reconciler.ts             # UNKNOWN → correlate ticket/orders/positions/deals/history; comment is only a hint
 │   │   ├── riskEngine.ts             # kill switch, limits, funds check
 │   │   ├── lotSizing.ts              # amount + SL distance → clamped lots (pure, unit-tested)
 │   │   └── executor.ts               # idempotency, retries, audit writes
@@ -601,7 +631,7 @@ noads-trade-tracker/
 │       └── retryQueue.ts             # in-memory bounded retry/backoff (v1)
 │
 └── tests/
-    ├── unit/                         # lotSizing, riskEngine, signalParser (vitest — pending approval)
+    ├── unit/                         # lotSizing, riskEngine, signalParser (vitest — approved in §15 #4)
     └── e2e/                          # webhook → simulated execution happy/sad paths
 ```
 
@@ -621,17 +651,17 @@ risk_basis_balance = 'locked'  → lockedReferenceBalance         (static until 
 monetary_risk      = riskPercent × risk_basis_balance           # e.g. 1% × $5,000 = $50
 ```
 
-**Fan-out rule (owner decision #8):** the engine runs **once per eligible account** (enabled **and** connected), using that account's own `AccountRiskProfile` (its amount/mode, caps, loss limit), its symbol mapping, and its free margin. Per-account results are fully independent: one account's rejection never blocks the others, and the Signal aggregates to `executed` / `partial` / `failed`.
+**Fan-out rule (owner decision #8):** the engine runs **once per eligible account** (enabled **and** connected), using that account's own `AccountRiskProfile` (its amount/mode, caps, loss limit), its symbol mapping, and its free margin. Per-account results are fully independent: one account's block or rejection never blocks the others, but that account receives **no new submission** while blocked; the Signal aggregates to `executed` / `partial` / `failed` / `unknown` without hiding any unknown account.
 
 **Inputs**
-- From the instruction: `direction`, `entry`, `stopLoss`, `riskAmount`.
-- From the broker (via adapter, cached per symbol but refreshed on spec-mismatch errors): `contract_size`, `tick_size`, `tick_value` (expressed by MT in the **account deposit currency**, per tick, per 1.0 lot — this is what makes the formula account-currency-safe), `volume_min`, `volume_max`, `volume_step`, `leverage`, `free_margin`, live bid/ask.
+- From the instruction: `direction`, `entry`, mandatory `stopLoss`; per-account monetary risk is derived from the account's fixed risk percentage, not a dollar amount in the instruction.
+- From the broker: validated instrument `contract_size`, `tick_size`, volume rules, leverage/free margin; fresh direction-appropriate bid/ask with source timestamp and `lossTickValue`/`profitTickValue` from `/current-price` (not assumed in the REST symbol specification). Verify account-currency units and a fresh conversion path/rate when necessary. Reject missing, invalid, stale or inconsistent inputs; quote age = decision time minus source time with documented clock semantics. Numerical age/conversion limits remain unapproved pending provider review.
 
 **Algorithm (pure function → 100% unit-tested)**
 ```
 sl_distance   = |entry − stopLoss|                      # direction sanity-checked
 ticks         = sl_distance / tick_size
-loss_per_lot  = ticks × tick_value                      # account currency, per 1.0 lot
+loss_per_lot  = ticks × validated_quote.lossTickValue    # account currency, per 1.0 lot
 raw_lots      = monetary_risk / loss_per_lot
 lots          = floor(raw_lots / volume_step) × volume_step   # ALWAYS round DOWN:
                                                         # rounding up would exceed stated risk
@@ -639,28 +669,30 @@ REJECT if lots < volume_min          → reason: risk_below_minimum_lot
 REJECT if lots > volume_max          → reason: max_lot_exceeded   (never silently clamp)
 REJECT if lots > maxLotsPerTrade     → reason: risk_cap_exceeded
 margin_required ≈ (lots × contract_size × entry) / leverage
-REJECT if free_margin < margin_required × 1.05          → reason: insufficient_margin
-OTHERWISE submit (market | limit@entry | stop@entry) with SL/TP attached
+REJECT if validated margin requirement exceeds available free margin (any extra buffer requires approved, broker-tested policy) → insufficient_margin
+OTHERWISE submit only after current quote/FX/session/margin checks; read back broker-stored SL/TP on pending and resulting position. Inconclusive/mismatch → scope-aware incident fence (§8A); never confirmed protection.
 ```
 
-**Worked example (owner's spec):** Account risk **1% on a $10,000 reference balance → $100 monetary risk**. XAUUSD — entry 2650.00, SL 2640.00, TP 2670.00. Broker spec: contract 100 oz, tick 0.01, tick value $1.00/lot, step 0.01, min 0.01, max 100, leverage 1:500.
+**Worked example (owner's spec; illustration, not a fresh live quote):** Account risk **1% on a $10,000 reference balance → $100 monetary risk**. XAUUSD — entry 2650.00, SL 2640.00, TP 2670.00. Broker spec: contract 100 oz, tick 0.01, step 0.01, min 0.01, max 100, leverage 1:500. Assumed validated quote: `lossTickValue` $1.00/tick/lot in account currency.
 ```
 sl_distance  = 10.00        ticks = 10.00 / 0.01 = 1000
 loss_per_lot = 1000 × $1.00 = $1,000 per lot
 raw_lots     = $100 / $1,000 = 0.10  → step-clamp → 0.10 ✓ (min/max ✓)
-margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  ✓
+margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  (illustration only; broker margin must be checked)
 ⇒ BUY 0.10 lots, SL 2640, TP 2670 — maximum planned loss ≈ $100
 ```
 
-**Pending setups & execution lock (owner directive)**
-- A setup whose entry has **not yet triggered** stays subject to the CURRENT account risk configuration. If the user changes risk %, basis mode, or reference balance while pending: our managed UNFILLED broker orders on that account are **cancel+replaced at the new size** (SL/TP levels preserved); the eventual execution uses the new settings. A fill racing the replace wins — filled = locked.
-- At entry trigger the pipeline snapshots `riskSnapshot` + `SizingResult` into the Execution. From that instant, changes to risk %, basis mode, reference balance, or account availability **cannot alter the order** (state-machine lock boundary, §6).
-- Settings changes are allowed at any time; the lock — not input blocking — protects running orders.
-- The resulting position size **and** the calculated maximum planned loss are visible to the user before execution (SizingPreview / ExecutionResultCard).
+**Broker-side pending setups, cancellation races & execution lock (ratified policy; provider finality unverified)**
+- Preserve current *desired* per-account risk while untriggered, separately from the last *broker-confirmed* pending volume/risk revision. Serialize operations per account/setup with a durable intent/fence; an ID/comment is correlation, NOT broker-enforced deduplication. The broker may fill the old order at committed volume before/during/after cancel. Lock the **actual** filled slice/order terms at trigger, record deviation from newest desired settings, and never retroactively claim latest risk governed it.
+- On risk change, mark cancel requested; distinguish request, acknowledgement and final state. Reconcile the original order, any positions and all linked deals/history with complete volume accounting. Only authoritative final cancellation **plus sufficiently complete evidence of zero fills** permits a fresh validated replacement intent. A single empty list, acknowledgement, correlation ID or elapsed time is insufficient. Conflicting/incomplete evidence → UNKNOWN and scope-aware incident fence; no replacement or blind retry.
+- Partial fill: separately record filled exposure and remaining order volume; **never automatically replace**. Automatic residual cancellation is disabled until provider/broker behavior and uncertain outcomes are validated. No automatic amend/close/reduce/offset. Unquantifiable actual risk is UNKNOWN, not zero.
+- Exposure/protection incident: block new submissions on the affected account unless objective isolation evidence proves exposure, shared margin, account state and calculations are unaffected; then block only the affected setup/order. Reconcile original, residual, positions, deals and possible replacement; timestamp source queries/states and final reconciliation. Verify broker-stored SL/TP for every active pending order and resulting position; owner acknowledgement cannot override unverified/mismatched protection for Phase 1. Zero exposure permits protection N/A only with authoritative evidence. Preserve warning; clear stale replacement intent; separate explicit owner authorization is required to resume. Incident resolution/unblocking never executes an order; only a future independent signal can enter validation. Any late fill, deal, changed residual or contradictory protection immediately re-blocks.
+- UNKNOWN reconciliation uses bounded backoff/retry and escalates to a human at the maximum interval without declaring success or lifting the block. Numeric thresholds, negative-history finality, quote/FX freshness and residual-cancel behavior require provider/broker validation before an executable test.
+- The preview shows actual size and **planned** loss before execution; gaps/fees and fill races may exceed the estimate. Settings changes after fill do not mutate running exposure. Broker-native pending volume cannot be guaranteed equal to newest desired risk at exact trigger.
 
 **Display-before-execution rule (owner requirement)**
 - In-app manual/setup trades (v2): the computed size panel is **mandatory** before the Execute button enables.
-- Alert-driven (v1): full automation cannot literally pause for a human, so two safeguards: (a) the `SizingResult` preview is written into the execution record before submission (auditable "what the app saw"), and (b) `executionMode: 'confirm'` parks alert-driven orders in `awaiting_confirm` for explicit approval. Default for confirm-mode is a pending owner decision (#7).
+- Alert-driven (v1): full automation cannot literally pause for a human, so two safeguards: (a) the `SizingResult` preview is written into the execution record before submission (auditable "what the app saw"), and (b) `executionMode: 'confirm'` parks alert-driven orders in `awaiting_confirm` for explicit approval. Default is `auto` (§15 #7); `confirm` is optional.
 - **If constraints cannot be satisfied, the trade is NOT executed** — the ❌ card in §9 shows exactly why.
 
 **Other handled behaviors (owner's checklist → where they live)**
@@ -671,16 +703,16 @@ margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  ✓
 | Broker symbol differences | `SymbolMapEntry` per account |
 | Balance/equity & margin checks | Risk engine pre-flight (above) |
 | Min/max/step lots | Sizing clamps + REJECT rules (above) |
-| Duplicate-order protection | fingerprint dedupe + `idempotencyKey` |
-| Connection failures | adapter heartbeat + `failed_timeout` state + bounded retries |
+| Duplicate-order protection | fingerprint dedupe + durable per-account/setup fence, broker reconciliation; correlation key is not an exactly-once guarantee |
+| Connection failures | `failed_pre_submit` only if request demonstrably never left; ambiguous POST/timeout/5xx/429 → UNKNOWN, bounded read-only reconciliation and scope-aware incident fence; no blind trade retry |
 | Broker rejection | `rejected_broker` + error code verbatim on ❌ card |
 | Slippage | `filledPrice − requestedPrice` displayed on the result card |
 | Execution confirmation | execution result card + optional provider-side confirmations |
-| Partial fills | `partial_filled` state + `fills[]` history |
-| Trade history | execution ledger (v1) + broker deal history view (phase 5) |
+| Partial fills | `partial_filled` + deal-linked filled/residual volumes; never auto-replace, residual cancel disabled pending validation |
+| Trade history | execution ledger **and broker deal/order history reads for reconciliation in v1**; optional user-facing history view (phase 5) |
 | Audit logs | `rawPayload` + `SizingResult` + every state transition stored |
-| Unknown execution state | `unknown` state + reconciler: order comment carries the idempotency key; broker is polled until the outcome resolves; **never reported as failed without proof, never left silent**; unresolved ⇒ escalated to the user (product definition §3B point 10) |
-| Risk basis modes & execution lock | §8A Step 0 (locked vs current balance) + `riskSnapshot` lock; pending managed orders cancel+replaced on settings change |
+| Unknown execution state | `unknown` + scope-aware fence; reconcile by ticket, bounded correlation, linked orders/positions/deals/history; incomplete/contradictory evidence remains UNKNOWN and escalates; never blindly retry or treat a comment as guaranteed uniqueness |
+| Risk basis modes & execution lock | §8A Step 0 + actual fill snapshot; cancel/reconcile before any replacement, with scope-aware fence on uncertainty |
 
 ---
 
@@ -702,7 +734,7 @@ margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  ✓
   12:04:11 · signal #a1b2 · attempt 1 · [Details] [Retry when safe]
   ```
   Success variant additionally shows fill price and slippage (`EXECUTED @ 2650.31, slippage +0.31`) and partial-fill details when applicable.
-- Unknown variant: `⚠️ EXECUTION UNKNOWN — reconciling with broker…` while the reconciler works; if it cannot resolve automatically, the card says `CHECK ACCOUNT` and automatic retries for that signal are blocked until the user acknowledges.
+- Unknown variant: `⚠️ EXECUTION UNKNOWN — reconciling with broker…`; UNKNOWN persists with a scope-aware submission fence: setup-only only with objective proof of account isolation, otherwise affected-account-wide; shared service failure blocks dependent accounts. Owner acknowledgement alone never clears unverified/mismatched SL/TP. Separate owner authorization to resume requires authoritative exposure reconciliation and confirmed protection (or authoritative zero exposure). Unblocking never releases a queued order or replays a signal; late evidence re-blocks and reopens the audit.
 - Responsive: mobile-first layouts; dashboard feed and kill switch fully usable on a phone.
 
 ---
@@ -747,7 +779,7 @@ margin_req   = 0.10 × 100 × 2650 / 500 ≈ $53  ✓
 | D. Frontend ↔ server logic? | Yes | REST JSON API |
 | E. Sensitive operations? | **YES — real orders** | Server-side validation of everything; encrypted broker credentials; env-only secrets (`.env` in `.gitignore`, `.env.example` committed); audit trail |
 | F. External services? | Yes — TradingView (inbound webhook), MetaApi (outbound REST) | Adapter layer isolates both |
-| G. Async processing? | Yes — retries, heartbeats | v1: in-process retry/backoff queue; upgrade path to a real queue if needed |
+| G. Async processing? | Yes — retries, heartbeats | v1: durable incident fence and bounded read-only reconciliation; in-memory only is insufficient for UNKNOWN |
 | Logging/monitoring | Yes | Structured audit table + plain log; signal feed doubles as ops monitor |
 
 **Technology choice rationale:** Node ≥ 22 gives us built-in SQLite (no ORM/driver dependency) and matches the frontend language, keeping one toolchain. Express is deliberately boring and stable.
@@ -859,9 +891,9 @@ Rule: before MVP Phase 1, every material technical assumption gets either a vali
 
 ### POC-1 — MetaApi end-to-end demo execution (critical path)
 - **Minimum code:** one Node script (`poc/metaapi-exec.mjs`), zero dependencies (native fetch), no UI, no production files touched.
-- **Tests the REAL integration:** connect/provision the owner's demo MT account → wait until DEPLOYED → read balance/equity/free margin → read live symbol spec (XAUUSD or owner's symbol) → run §8A sizing math on the real spec → place a minimum-lot market order with SL/TP + idempotency comment → verify fill + price → close it → place an away-from-market limit order → cancel it → capture a deliberate rejection (bad symbol) with the broker error code. Latency measured at each hop; raw responses logged.
-- **Owner prerequisites:** free MetaApi account + API token; demo MT login/password/server. Token goes in `poc/.env.local` (git-ignored) — never in code or committed files.
-- **Pass criteria:** all steps succeed on demo, or failures are understood and documented with a concrete architecture-change proposal.
+- **Tests the REAL integration (historical scope; no new run authorized):** connect/provision the owner's demo MT account → wait until DEPLOYED → read balance/equity/free margin → read live symbol spec (XAUUSD or owner's symbol) → run §8A sizing math on the real spec → place a minimum-lot market order with SL/TP + idempotency comment → verify fill + price → close it → place an away-from-market limit order → cancel it → capture a deliberate rejection (bad symbol) with the broker error code. Latency measured at each hop; raw responses logged.
+- **Historical prerequisites:** owner-supplied demo account and provider token. A MetaApi account is **not known to be free**; deployment/hosting and possible other charges apply. Secrets stay out of Git.
+- **Current acceptance:** [mandatory evidence/conditional cases and cost blockers](poc/POC-1-next-run-plan.md); public [provider evidence/unknowns](poc/MetaApi-provider-evidence.md). A step-count pass or a documented failure alone does not close POC-1; no new execution authorized.
 
 ### POC-2 — real TradingView webhook → our receiver
 - **Minimum code:** one Node script (`poc/webhook-receiver.mjs`) exposing `POST /webhook/:token` on the sandbox's public HTTPS preview URL.
@@ -872,4 +904,15 @@ Rule: before MVP Phase 1, every material technical assumption gets either a vali
 SQLite persistence, Context/reducer UI plumbing, Tailwind styling, auth, and audit logging carry **no material technical uncertainty** — they are standard, well-trodden engineering. Building POCs for them would violate the owner's "do not expand the POC into the MVP prematurely" rule.
 
 ### Gate
-**MVP Phase 1 does not start until POC-1 and POC-2 results are documented.** POC code lives in `poc/` and never ships into production paths.
+**MVP Phase 1 is ON HOLD.** POC-2 is PASS; POC-1 remains OPEN despite a 22/22 scoped run and a separate manual MT5 check. The owner confirmed the demo MT5 account flat after two manual cancellations; that does not prove MetaApi cancellation/SL/TP/reconciliation. POC code lives in `poc/` and never ships into production. Gate 7 requires an evidence-backed POC-1 pass and the owner must subsequently confirm it before Phase 1 starts (unless explicitly changing authorization); documentation preparation, PR merge and offline planning do not lift the hold.
+
+## Phase 1 first slice — implementation plan, ON HOLD (2026-10-10)
+
+This is a ready-to-activate **plan, not implementation approval**. Start only after MetaApi POC-1 has an evidence-backed PASS, the owner subsequently confirms it, and unresolved limitations have explicit fail-closed controls (or the owner separately changes authorization). POC-2 is documented PASS. No production code, dependency, migration or external service is authorized by this section.
+
+1. **Contract and durable store.** On activation, choose the smallest existing stack after confirming deployment/runtime and owner approval of any dependency. Define typed normalized signal, account, setup/order/revision/deal/position, risk snapshot, incident scope, protection and audit-event records. Add durable transactional persistence before network sends; schema/migrations preserve source timestamps, IDs, accepted revisions, filled/residual/actual volume, quote/spec/FX/margin inputs and owner events. Secrets are server-only, encrypted at rest, excluded from logs/API responses. Tests: migration round trip, uniqueness and restart recovery.
+2. **Ingress and validation.** Move the proven POC-2 webhook behavior into production isolation (do not reuse its verbatim body/token logging); authenticate before accepting, bounded payload, stable fingerprint/TTL, fast acknowledgement after durable enqueue, error/replay states. Parse TradingView string numerics, validate symbol/order/SL/TP, and reject missing inputs explicitly. Offline contract tests: malformed/auth/replay/window and concurrent duplicates; integration of a real alert requires its own authorization.
+3. **Per-account risk and preview.** For each enabled account, validate current directional quote/time interpretation, broker symbol spec, deposit-currency tick value/conversion and age, margin/session and risk mode. Compute raw and rounded-down volume; never clamp up to unaffordable minimum. Persist intended and broker-confirmed risk separately, actual fill exposure separately; missing/stale/contradictory inputs yield UNKNOWN/blocked, never zero. Show preview and reject reasons without promising realized loss. Tests: boundary, currency, stale/clock-skew, min lot, partial and margin cases; do not invent thresholds before POC validation.
+4. **Execution and read-only reconciler.** Transactionally fence a unique intent before submitting; strictly one attempted send, no retry of ambiguous sends. Reconcile ticket plus linked orders/deals/positions/history with synchronization, pagination and time-window overlap; store UNKNOWN and stop at any gap/contradiction. Distinguish requested, acknowledged, accepted, partial, residual, final canceled, filled and closed; no auto replacement on partial and no auto residual cancel. For risk revisions, final canceled **and** complete zero-fill proof are prerequisites for a new, separately validated intent. Read back pending and resulting position SL/TP and classify confirmed/mismatched/unverified (N/A only with authoritative zero exposure). Tests: crash before/after send, replay, delayed fill/cancel race, out-of-order and incomplete histories, gaps, and late contradictions using fixtures; provider claims require separate empirical evidence.
+5. **Incident scope, resolution, UI.** Persist a fence at setup, account or shared-service dependency scope; setup-only requires objective unaffected account exposure, shared margin, account state and calculations, otherwise widen. Shared outage blocks dependent submissions only; independent reliable accounts can continue. Resolution reconciles exposure and protection; resumption is a distinct authorized event, only after confirmed protection or authoritative zero exposure. On unblock discard stale replacement intent; never auto-send, release parked orders or replay alerts. Existing unprotected exposure gets immediate warning/owner escalation and no unapproved auto remediation. Provide mobile-first status cards for accepted, UNKNOWN, protection, risk, response and owner actions. Tests: isolation proof missing vs present, service dependency, concurrent accounts, owner acknowledgement insufficient, resume no-send, late re-block.
+6. **Verification and handoff.** Ship in small reviewed slices with offline unit/fixture tests first; add integration only under later explicit authorization. Document configuration, migrations/rollback, observability, bounded read-only reconciliation limits and incident runbook; exercise restart and kill switch. Definition of done: each transition/audit input is durable and explainable, all negative-path tests pass, no credentials in diff/logs, no unsupported provider assertion, and owner reviews the demonstrated evidence. Leave every empirically unresolved rule fail-closed and visible.

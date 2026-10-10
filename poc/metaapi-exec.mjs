@@ -12,6 +12,17 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { selectExactDemoAccount } from './metaapi-safety.mjs';
+
+// Fail closed BEFORE reading credentials, probing hosts or making any account/API call.
+// The legacy workflow cannot establish billing limits, history finality or safe protection
+// readback; removing this lock requires a separately reviewed, explicitly authorized change.
+if (process.argv.includes('--help')) {
+  console.log('POC-1 execution is disabled. See docs/poc/POC-1-next-run-plan.md.');
+  process.exit(0);
+}
+console.error('BLOCKED: POC-1 MetaApi execution and cleanup require a future, separately authorized implementation. No provider call made.');
+process.exit(2);
 
 // ── env ────────────────────────────────────────────────────────────────────
 const envPath = new URL('./.env.local', import.meta.url).pathname;
@@ -91,67 +102,20 @@ function step(name, ok, detail = '') {
 const sleep = s => new Promise(r => setTimeout(r, s * 1000));
 const tradeDone = r => r.ok && r.json?.numericCode === 10009;
 
-// ── 1. find or create + deploy the demo account ────────────────────────────
+// ── 1. select an existing exact deployed demo account ────────────────────────────
 let account = null, tradeHost = null;
 {
   const { ok, json } = await api('GET', `${PROV}/users/current/accounts`, null, 'list accounts');
   step('list accounts', ok);
   if (!ok) finish();
   const allAccounts = Array.isArray(json) ? json : [];
-  // Never adopt an arbitrary first account: this POC must trade on ONE known demo server.
-  account = allAccounts.find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER)
-    || (allAccounts.length === 1 && allAccounts[0].server === MT_SERVER ? allAccounts[0] : null);
-  if (allAccounts.length && !account) {
-    step('select demo account', false, 'No unique account on MT_SERVER; set MT_LOGIN to the correct demo login. No orders sent.'); finish();
-  }
-  if (account && String(account.login) !== String(MT_LOGIN)) {
-    console.log(`    adopting sole demo account: login=${account.login} server=${account.server} platform=${account.platform || '?'} state=${account.state}`);
-  }
-  if (account) {
-    account.id = account.id || account._id;   // MetaApi list records may key the id as _id
-    if (!account.id || !/demo/i.test(account.server)) {
-      step('account id and demo server', false, 'Missing id or not a demo account; no orders sent.'); finish();
-    }
-    console.log(`    account id=${account.id} region=${account.region || '?'}`);
-  }
-  if (cancelOnly && !account) {
-    step('select existing account for cleanup', false, 'No account found; refusing to create one in cancellation-only mode.'); finish();
-  }
-  if (!account) {
-    const txid = randomUUID().replace(/-/g, '');
-    const body = {
-      name: `ntt-poc-${MT_LOGIN}`, type: 'cloud', login: String(MT_LOGIN),
-      password: MT_PASSWORD, server: MT_SERVER, platform: PLATFORM, magic: 279843,
-    };
-    const created = await api('POST', `${PROV}/users/current/accounts`, body, 'create account', { 'transaction-id': txid });
-    step('create account', created.ok, created.ok ? `status ${created.status}` : JSON.stringify(created.json).slice(0, 200));
-    if (!created.ok) finish();
-    // MetaApi async protocol: 202 = re-send the SAME request with the SAME
-    // transaction-id until the real result (account or error) surfaces.
-    account = null;   // NEVER trust the 202 body id — it can be a phantom.
-    for (let i = 0; i < 30 && !account?.id; i++) {
-      await sleep(5);
-      const poll = await api('POST', `${PROV}/users/current/accounts`, body, 'poll create (same transaction-id)', { 'transaction-id': txid });
-      if (poll.ok && poll.status !== 202 && poll.json && poll.json.id) { account = poll.json; break; }
-      if (!poll.ok && poll.status !== 202) {
-        step('async create finished with error', false, JSON.stringify(poll.json).slice(0, 400));
-        finish();
-      }
-      const l = await api('GET', `${PROV}/users/current/accounts`, null, 'list check during tx poll');
-      const found = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER);
-      if (found?.id) { account = found; console.log(`    found account id=${account.id} state=${account.state}`); break; }
-    }
-    // Fallback: resolve via the account list.
-    for (let i = 0; i < 12 && !account?.id; i++) {
-      await sleep(5);
-      const l = await api('GET', `${PROV}/users/current/accounts`, null, 'poll list for new account id');
-      account = (Array.isArray(l.json) ? l.json : []).find(a => String(a.login) === String(MT_LOGIN) && a.server === MT_SERVER) || null;
-      if (account?.id) console.log(`    found account id=${account.id} state=${account.state}`);
-    }
-    if (!account?.id) { step('created account id resolvable', false, 'no account with our login appeared in list'); finish(); }
-    if (account.state !== 'DEPLOYED') {
-      await api('POST', `${PROV}/users/current/accounts/${account.id}/deploy`, {}, 'deploy account');
-    }
+  // Future execution path: exact identity only; no sole-account fallback and no billable create/deploy.
+  try {
+    account = selectExactDemoAccount(allAccounts, {
+      id: env.POC_APPROVED_ACCOUNT_ID, login: MT_LOGIN, server: MT_SERVER, platform: PLATFORM,
+    });
+  } catch (e) {
+    step('select existing exact deployed demo account', false, e.message); finish();
   }
   // wait for DEPLOYED
   let deployed = account.state === 'DEPLOYED';
