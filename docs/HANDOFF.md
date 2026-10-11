@@ -2,7 +2,7 @@
 
 > **Start here.** This file keeps the project's status, open decisions, requirements, working rules and session log in one place, so the work can continue later, on another machine, or with another assistant. Evidence lives in `docs/poc/`. The plan lives in `docs/ARCHITECTURE.md`.
 
-**Last updated:** 2026-10-10 (Lagos time; full-scope POC engineering authorization) · **Session branch:** `arena/5c731da5-noads-trade-tracker` · **Branch base:** `487a43e` (`main`); project work merged from `arena/01a0e310-noads-trade-tracker` · **Phase 1 code:** not started (on hold)
+**Last updated:** 2026-10-10 (Lagos time; second offline session — runner hardening + BLOCKED case status) · **Session branch:** `arena/f3f69ae5-noads-trade-tracker` · **Branch base:** `5154e4a` (`main`, single-commit snapshot of the merged PR #1 state copied by the owner) · **Phase 1 code:** not started (on hold)
 
 ---
 
@@ -13,7 +13,7 @@
 | Item | Status | Evidence |
 |---|---|---|
 | POC-2: TradingView webhook → our receiver | **PASS** (2026-10-03) | `docs/poc/POC-2-results.md` |
-| POC-1: MetaApi → MT5 supported-entry execution | **OPEN**; eight-type demo matrix and offline runner prepared; no new live run | `docs/poc/POC-1-results.md`, [new plan](poc/POC-1-next-run-plan.md) |
+| POC-1: MetaApi → MT5 supported-entry execution | **OPEN**; eight-case runner hardened offline (26/26 tests); E01–E08 **BLOCKED** from the sandbox — no credentials and no network path to MetaApi; live run pending on an owner-provisioned machine | `docs/poc/POC-1-results.md` §0.1, [new plan](poc/POC-1-next-run-plan.md) |
 | Phase 1 product code | **Not started; ON HOLD** | ARCHITECTURE §17 and subsequent owner confirmation gate |
 | Provider/billing terms and hard spend control | Owner funds MetaApi; $500 flexible planning only; access/balance unverified | [matrix](poc/MetaApi-provider-evidence.md), [cost worksheet](poc/POC-1-next-run-plan.md) |
 | TradingView Charting Library license | Owner action; status not recorded | ARCHITECTURE §15 #9 |
@@ -37,7 +37,7 @@
 - **Current authorization:** offline development, simulations and in-scope MetaApi demo tests/cancel/reconciliation are authorized when the designated account, access and sufficient balance are available. No repeated billing screenshots, spending-limit proof or separate general execution approval. Payment changes, unrelated purchases, live accounts and production trading remain out of scope. $500 is flexible planning only.
 - **Gate:** POC-1 OPEN and Phase 1 ON HOLD until all supported cases and required lifecycle evidence genuinely pass; then proceed directly to the prepared Phase 1 plan without another general planning cycle. No new broker observations in this turn.
 
-The guarded [eight-case runner](../poc/README.md) is prepared offline. Provider access and balance are unavailable in this sandbox; continue offline work and do not manufacture live results. The prior owner-confirmed flat-account check need not be repeated for offline work; a future authorized run independently preflights current account state. GitHub operations remain unavailable in this closed coding session (§4).
+The guarded [eight-case runner](../poc/README.md) is prepared and hardened offline (2026-10-10 second session: connection/sync gate, flat-baseline rule, rejection readback, direction and closing-deal verification, transport-error evidence, interruptible-journal closure; 26/26 offline tests). Provider access is unavailable in this sandbox — no `poc/.env.local` and MetaApi hosts are unreachable (probe evidence in POC-1 §0.1) — so E01–E08 are **BLOCKED** here and no live result was manufactured. A live run belongs on the owner-provisioned machine once access/balance exist, one case per invocation with its own fresh preflight. The prior owner-confirmed flat-account check need not be repeated for offline work; an authorized run independently preflights current account state. GitHub operations **are available** in this session; changes are published via the session branch and PR (§4).
 
 ---
 
@@ -54,13 +54,14 @@ The guarded [eight-case runner](../poc/README.md) is prepared offline. Provider 
 | `poc/metaapi-safety.mjs`, `poc/metaapi-safety.test.mjs` | Pure offline safety predicates/tests. | Not provider integration proof |
 | `docs/poc/POC-2-results.md` | TradingView webhook POC: real delivery and receiver replay. | PASS |
 | `poc/metaapi-exec.mjs` | Historical unsafe harness. | Disabled before I/O; do not unlock. |
-| `poc/poc1-engine.mjs`, `poc/poc1-metaapi-adapter.mjs`, `poc/poc1-runner.mjs` | New guarded single-case demo runner. | Offline tests only; broker execution unverified. | |
+| `poc/poc1-engine.mjs`, `poc/poc1-metaapi-adapter.mjs`, `poc/poc1-runner.mjs` | New guarded single-case demo runner. | Hardened offline 2026-10-10 (second session); broker execution still unverified. |
+| `poc/poc1-runner.test.mjs` | Offline CLI/journal/restart gate tests (usage guards, interrupted-journal closure, PASS-gate evidence rules). | Added 2026-10-10; no network, no `.env.local` access. |
 | `poc/webhook-receiver.mjs` | POC-2 receiver: `POST /webhook/:token` on port 8790. Parses, checks the token, dedupes. Logs deliveries to an ignored file. | Used for POC-2. |
 | `poc/debug-list.mjs` | Historical account-list diagnostic. | Disabled before credentials/network; do not run against MetaApi. |
 | `poc/.env.example` | Template for `poc/.env.local` (variable names and defaults). | `MT_PLATFORM=mt5`; credentials blank, example only. |
 | `poc/README.md` | How to run POC-1 and POC-2. | Current. |
-| `.gitignore` | Ignores `.env.local`, POC run logs and the webhook log. Keeps `.env.example` tracked. | — |
-| `README.md` | Project title only. | Unchanged. |
+| `.gitignore` | Ignores `.env.local`, POC run logs, the journals directory and the webhook log. Keeps `.env.example` tracked. | — |
+| Root `README.md` | **Does not exist in this checkout** (an earlier handoff described it; the single-commit `main` snapshot has none). | Absent; create only if the owner asks. |
 
 **Not in the repo, by design:**
 
@@ -72,11 +73,11 @@ The guarded [eight-case runner](../poc/README.md) is prepared offline. Provider 
 
 ---
 
-## 4. Git state and closed-session limitation
+## 4. Git state (reconciled 2026-10-10, second session)
 
-- The previous turn reported [PR #1](https://github.com/The-Mhood/noads-trade-tracker/pull/1) **MERGED** on 2026-10-10 (merge commit `654b936`; session-branch head `96467d8`). Its merge did not close POC-1 or authorize spending/Phase 1.
-- **This closed coding session cannot push, open/merge PRs or query GitHub.** Its current local checkout reports session branch `arena/5c731da5-noads-trade-tracker` at old base `487a43e`, with a pre-existing overlay of the prior documentation/POC files appearing untracked and the unrelated root `ARCHITECTURE.md` appearing deleted. Preserve the overlay: do not clean/reset it. The prior merged head object is not available locally. New changes in this turn are offline file edits only and **are not published**.
-- Reconcile this checkout with remote history in a **new coding session** before publishing; do not mistake the overlay for a new independent implementation or repeat the old PR merge. The authoritative project plan is `docs/ARCHITECTURE.md`.
+- **History:** PR #1 (`arena/5c731da5-noads-trade-tracker` → `main`) shows **MERGED** on GitHub (2026-10-09). The owner then manually copied the merged documentation/code state into `main` as a single commit `5154e4a` ("commit all", 19 files). The older merge/head objects referenced in prior handoffs (`654b936`, `96467d8`, base `487a43e`) do not exist in this checkout — the repository itself is the source of truth. That merge did not close POC-1 or authorize spending/Phase 1.
+- **This session:** branch `arena/f3f69ae5-noads-trade-tracker` based on `5154e4a`; the working tree was clean at audit (no overlay, no uncommitted work). GitHub operations are **available and verified** (`gh` authenticated); this turn's runner hardening and documentation reconciliation are committed to the session branch, pushed, and published as a PR. Every remote operation is verified before being reported as successful.
+- The previous turn's closed-session limitation (no push/PR, untracked overlay to preserve) applied to that checkout only and is superseded here. The authoritative project plan is `docs/ARCHITECTURE.md`.
 
 ---
 
@@ -126,9 +127,9 @@ Condensed from the owner's specifications. "Where" points to `docs/ARCHITECTURE.
 
 ## 7. Harness and verification
 
-`poc/metaapi-exec.mjs` and `poc/debug-list.mjs` stay blocked before credentials/network. New `poc/poc1-engine.mjs`, `poc/poc1-metaapi-adapter.mjs` and `poc/poc1-runner.mjs` implement a separate **single-case-at-a-time** MT5 demo path (exact account, live spec/quote/session/risk checks, durable journal before POST, order/position SL/TP readback, safe planned pending modification and cleanup). Unexpected outcomes stop further submissions; provider REST history never yields automatic PASS. The runner has not touched MetaApi in this sandbox, and no credentials are present. See [POC README](../poc/README.md).
+`poc/metaapi-exec.mjs` and `poc/debug-list.mjs` stay blocked before credentials/network. New `poc/poc1-engine.mjs`, `poc/poc1-metaapi-adapter.mjs` and `poc/poc1-runner.mjs` implement a separate **single-case-at-a-time** MT5 demo path (exact account with broker-connection/synchronization gate, live spec/quote/session/risk checks, account-wide flat baseline, durable journal before POST, order/position SL/TP and direction readback, post-rejection readback, safe planned pending modification — skipped-not-fenced when locally unsafe — and cleanup with closing-deal linkage). Unexpected outcomes stop further submissions; provider REST history never yields automatic PASS; interrupted journals close only via read-only reconciliation plus a non-PASS human review. The runner has not touched MetaApi in this sandbox, and no credentials are present. See [POC README](../poc/README.md).
 
-Offline: `node poc/poc1-runner.mjs --plan`, `node --test poc/metaapi-safety.test.mjs poc/poc1-engine.test.mjs`, and `node --check poc/*.mjs`. Simulated failures test no duplicate sends, uncertain cancel, partial-fill race, stale quotes and mismatched protection; **not** broker evidence. Once account access/balance permit, run the [matrix](poc/POC-1-next-run-plan.md) case by case and record real verdicts. Do not bypass an unreviewed journal/fence or substitute the locked historical harness.
+Offline: `node poc/poc1-runner.mjs --plan`, `node --test poc/metaapi-safety.test.mjs poc/poc1-engine.test.mjs poc/poc1-runner.test.mjs` (26/26 as of 2026-10-10), and `node --check poc/*.mjs`. Simulated failures test no duplicate sends, uncertain cancel, partial-fill race, stale quotes, mismatched protection, rejection/exposure contradiction, wrong position direction, disconnected accounts, unrelated exposure, ambiguous-send error evidence and journal/restart gates; **not** broker evidence. Once account access/balance permit, run the [matrix](poc/POC-1-next-run-plan.md) case by case and record real verdicts. Do not bypass an unreviewed journal/fence or substitute the locked historical harness.
 
 ---
 
@@ -165,7 +166,7 @@ Offline: `node poc/poc1-runner.mjs --plan`, `node --test poc/metaapi-safety.test
 
 ## 10. Working rules (the owner's standing instructions)
 
-1. The 2026-10-10 directive authorizes documentation and offline harness safety/tests now; POC execution and Phase 1 product code remain on hold.
+1. The 2026-10-10 full-scope directive authorizes offline engineering **and** in-scope MetaApi demo execution when the designated account, access and sufficient balance are available; do not request billing screenshots, spend-cap proof or another general authorization. Payment-method changes, unrelated services, live/prop-firm accounts and credential exposure remain forbidden. Phase 1 product code stays ON HOLD until POC-1 genuinely passes; after an evidence-backed pass, proceed directly to the prepared Phase 1 plan without another general planning cycle.
 2. Modify only what is needed. Do not rewrite existing code. Explain the approach before significant changes. One feature at a time.
 3. Before changing files, say exactly which files will be created or changed. After implementing, say exactly how to test.
 4. No new dependencies without asking. Tailwind CSS and vitest are approved.
@@ -212,16 +213,17 @@ Offline: `node poc/poc1-runner.mjs --plan`, `node --test poc/metaapi-safety.test
 | 2026-10-10 | PR #1 merged in the prior turn; this turn's checkout is a separate base-plus-overlay snapshot. No GitHub operations attempted in this closed session. | Previous turn's merge record; §4 |
 | 2026-10-10 | Owner clarified flexible initial $500 **project estimate**, not spend permission; revised offline POC plan to one BUY LIMIT, one conditional cancel, exact protection/finality evidence, cost/control worksheet and remaining blockers. POC-1 OPEN, Phase 1 ON HOLD. | [POC-1 next-run plan](poc/POC-1-next-run-plan.md) |
 | 2026-10-10 | Owner superseded the one-order scope and billing-proof gate; authorized full supported-entry demo POC and offline engineering. Eight-case matrix and new guarded runner prepared, no live broker call/result yet. | [POC matrix](poc/POC-1-next-run-plan.md), [runner](../poc/README.md) |
+| 2026-10-10 | Second offline session (`arena/f3f69ae5`): audited the single-commit checkout (`5154e4a`, clean tree); re-ran offline verification (16/16, then 26/26 after hardening); fixed runner/engine/adapter gaps (connection/sync gate, flat baseline, midnight sessions, rejection readback, position direction, closing-deal linkage, transport-error evidence, deals-window padding, ticket-less reconcile visibility, interrupted-journal closure, review PASS-gate hardening, strict broker-offset parsing, modification skip-not-fence); probed MetaApi reachability — blocked by sandbox egress with no credentials — so E01–E08 recorded **BLOCKED**; reconciled stale handoff/decision statements; published via session branch + PR. No MetaApi call, spend or verdict change: POC-1 OPEN, Phase 1 ON HOLD. | `docs/poc/POC-1-results.md` §0.1 |
 
 ---
 
 ## 12. How to resume
 
-1. Get the code: `git clone https://github.com/The-Mhood/noads-trade-tracker` (or `git fetch` if you already have a clone), then check out `arena/5c731da5-noads-trade-tracker` locally. In an Arena session, stay on the assigned session branch.
+1. Get the code: `git clone https://github.com/The-Mhood/noads-trade-tracker` (or `git fetch` if you already have a clone). `main` is the single-commit snapshot `5154e4a`. In an Arena session, stay on the assigned session branch (this session: `arena/f3f69ae5-noads-trade-tracker`).
 2. Read this file (§1, §2, §6, §10), then `docs/poc/POC-1-results.md` (§0, §5, §7, §9).
 3. Manual MT5 demo flat state was confirmed by the owner; do not ask to repeat it for documentation. An authorized execution session must perform its own fresh account-state preflight. POC-1 remains OPEN.
 4. The owner authorizes in-scope demo POC calls once account access/balance are available; do not unlock the legacy harness, bypass technical safeguards, access unrelated accounts or infer PASS from offline tests. The historical harness remains locked; use only the reviewed new single-case runner, and never claim an offline fixture is broker evidence.
-5. The owner's `poc/.env.local` stays on the owner's machine. Do not create a local credential file for offline work. Never paste tokens or passwords into chat or Git.
-6. Preserve local changes in this closed session; **remote operations are unavailable**. Start a new coding session to reconcile history, review the diff, commit/push and open any required PR under its workflow.
+5. The owner's `poc/.env.local` stays on the owner's machine. Do not create a local credential file for offline work. Never paste tokens or passwords into chat or Git. The live E01–E08 cases run on that machine (or any environment with MetaApi egress), one `--run-case` invocation at a time per [poc/README.md](../poc/README.md).
+6. Remote operations are available in this session: work is committed to the session branch, pushed and published as a PR after verification. In any future closed session where remotes are unavailable, preserve local changes and reconcile in the next session.
 
 To hand this to another assistant, say: "Read docs/HANDOFF.md first, then docs/poc/POC-1-results.md, and follow §10."

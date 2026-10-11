@@ -13,6 +13,10 @@ export function selectExactDemoAccount(accounts, { id, login, server, platform }
     && matches[0].server === server && String(matches[0].platform).toLowerCase() === platform,
   'missing, duplicate or mismatched demo account');
   requireEvidence(matches[0].state === 'DEPLOYED', 'account is not already deployed; no creation/deployment permitted');
+  // L00: no test while the broker connection is down or history is still synchronizing.
+  // connectionStatus is documented provisioning state; a missing field fails closed.
+  requireEvidence(matches[0].connectionStatus === 'CONNECTED', 'account is not connected to the broker');
+  requireEvidence(matches[0].synchronizing !== true, 'account history is still synchronizing');
   return matches[0];
 }
 

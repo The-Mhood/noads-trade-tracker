@@ -1,5 +1,10 @@
 // Narrow MetaApi REST adapter for the designated existing demo account only.
 // No account creation/deployment, no unrelated-account listing, no subscriptions.
+// POC-1 §4.4: this broker emitted +3h-offset timestamps labelled Z. The time-ranged
+// deals window is padded in BOTH directions so time-scoped evidence cannot be silently
+// missed; widening a read-only window changes no safety decision — ticket/position-linked
+// filtering happens downstream, and the pagination cap still fails closed.
+const DEALS_WINDOW_PAD_MS = 24 * 60 * 60 * 1000;
 export class MetaApiAdapter {
   constructor({ accountId, token, provisioningHost, tradeHost, fetchImpl = fetch, now = () => Date.now() }) {
     for (const host of [provisioningHost, tradeHost]) {
@@ -45,8 +50,8 @@ export class MetaApiAdapter {
       && Number.isFinite(info.freeMargin) && info.freeMargin > s.initialMargin * request.volume;
   }
   async historyDeals() {
-    const start = encodeURIComponent(this.startedAt);
-    const end = encodeURIComponent(new Date(this.now() + 60000).toISOString());
+    const start = encodeURIComponent(new Date(Date.parse(this.startedAt) - DEALS_WINDOW_PAD_MS).toISOString());
+    const end = encodeURIComponent(new Date(this.now() + DEALS_WINDOW_PAD_MS).toISOString());
     const all = [];
     for (let page = 0; page < 5; page++) {
       const rows = await this.read(`/history-deals/time/${start}/${end}?offset=${page * 1000}&limit=1000`);
@@ -69,9 +74,11 @@ export class MetaApiAdapter {
   async trade(body) {
     try {
       return await this.request(this.tradeHost, '/trade', 'POST', body);
-    } catch {
+    } catch (e) {
       // Network exception/timeout AFTER POST could mean broker accepted it.
-      return { httpOk: false, transportError: true, json: null };
+      // The cause is preserved for the journal: an ambiguous send must stay diagnosable, never hidden.
+      return { httpOk: false, transportError: true, json: null,
+        transportErrorDetail: String(e?.cause?.code || e?.message || e).slice(0, 160) };
     }
   }
 }

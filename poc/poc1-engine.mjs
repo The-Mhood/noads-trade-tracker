@@ -39,8 +39,13 @@ export function sessionOpen(spec, brokerNow) {
   const sessions = spec.tradeSessions?.[weekday];
   invariant(Array.isArray(sessions), 'broker session schedule unavailable');
   const clock = brokerNow.slice(11, 19).replaceAll(':', '.');
-  return sessions.some(x => typeof x.from === 'string' && typeof x.to === 'string'
-    && clock >= x.from.slice(0, 8).replaceAll(':', '.') && clock < x.to.slice(0, 8).replaceAll(':', '.'));
+  return sessions.some(x => {
+    if (typeof x.from !== 'string' || typeof x.to !== 'string') return false;
+    const from = x.from.slice(0, 8).replaceAll(':', '.');
+    const to = x.to.slice(0, 8).replaceAll(':', '.');
+    // A session whose end is at/before its start spans broker midnight.
+    return to > from ? (clock >= from && clock < to) : (clock >= from || clock < to);
+  });
 }
 
 export function buildRequest(test, spec, quote, { riskUsd, symbol, maxQuoteAgeMs, maxFutureSkewMs,
@@ -115,6 +120,9 @@ export function verifyPending(order, expected, spec) {
 export function verifyPosition(position, expected, spec) {
   if (!position || String(position.id) !== String(expected.positionId) || position.symbol !== expected.request.symbol
     || !near(position.volume, expected.request.volume, spec.volumeStep)) return 'unverified';
+  // Direction must match the request: an opposite-type position is contradictory evidence, never confirmed.
+  const wantType = String(expected.request.actionType).includes('SELL') ? 'POSITION_TYPE_SELL' : 'POSITION_TYPE_BUY';
+  if (position.type !== wantType) return 'mismatched';
   return protectionStatus(position, expected.request);
 }
 
@@ -133,9 +141,9 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
     ]);
     invariant(info?.currency === 'USD' && spec?.profitCurrency === 'USD', 'account currency/conversion not validated');
     complete(baseline);
-    invariant(Array.isArray(baseline.orders) && Array.isArray(baseline.positions)
-      && !baseline.orders.some(o => o.symbol === config.symbol)
-      && !baseline.positions.some(p => p.symbol === config.symbol), 'existing symbol exposure or unreadable baseline');
+    // L00: the dedicated POC account must be flat — unrelated exposure blocks the send too.
+    invariant(!baseline.orders.length && !baseline.positions.length,
+      'account baseline not flat: unrelated pending orders/positions or unreadable baseline');
     const allowed = entitlement(spec, test);
     if (allowed === 'UNSUPPORTED') {
       await journal.record({ event: 'unsupported', caseId, allowedOrderTypes: spec.allowedOrderTypes, tradeMode: spec.tradeMode });
@@ -148,13 +156,26 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
     invariant(await adapter.marginOk(plan.request, info), 'broker margin unverified or insufficient');
     await journal.record({ event: 'pre_send_intent', caseId, accountId: account.id ?? account._id,
       request: plan.request, quotedAt: plan.quotedAt, loss: plan.loss, quote: { bid: quote.bid, ask: quote.ask },
-      spec: { tickSize: spec.tickSize, minVolume: spec.minVolume, volumeStep: spec.volumeStep }, at: new Date(now()).toISOString() });
+      spec: { tickSize: spec.tickSize, minVolume: spec.minVolume, volumeStep: spec.volumeStep }, intentAt: new Date(now()).toISOString() });
     sent = true; // from here even a thrown transport error is UNKNOWN, never replayed
     const r = await adapter.trade(plan.request);
     await journal.record({ event: 'send_result', caseId, httpOk: r.httpOk, numericCode: r.json?.numericCode ?? null,
-      orderId: r.json?.orderId ?? null, positionId: r.json?.positionId ?? null, transportError: !!r.transportError });
+      orderId: r.json?.orderId ?? null, positionId: r.json?.positionId ?? null, transportError: !!r.transportError,
+      transportErrorDetail: r.transportErrorDetail ?? null });
     const classification = classifyTradeResponse({ httpOk: r.httpOk, numericCode: r.json?.numericCode, transportError: r.transportError });
-    if (classification === 'broker_rejected') return { status: 'FAIL', reason: 'correlated rejection; exposure readback still required', caseId };
+    if (classification === 'broker_rejected') {
+      // A definitive rejection must also be consistent with account state: one read-only readback.
+      // Contradicting exposure downgrades FAIL to UNKNOWN; the read itself never sends anything.
+      const after = complete(await adapter.snapshot(null));
+      const exposure = {
+        orders: after.orders.filter(o => o.symbol === config.symbol).map(o => ({ id: o.id, type: o.type, state: o.state })),
+        positions: after.positions.filter(p => p.symbol === config.symbol).map(p => ({ id: p.id, volume: p.volume })),
+      };
+      await journal.record({ event: 'post_reject_readback', caseId, numericCode: r.json?.numericCode ?? null, ...exposure });
+      if (exposure.orders.length || exposure.positions.length)
+        return { status: 'UNKNOWN', reason: 'rejection contradicted by symbol exposure; reconcile read-only', caseId };
+      return { status: 'FAIL', reason: `correlated rejection (numericCode ${r.json?.numericCode}); readback shows no symbol exposure`, caseId };
+    }
     if (classification !== 'acknowledged_unverified') return { status: 'UNKNOWN', reason: classification, caseId };
     const ticket = r.json?.orderId;
     const positionId = r.json?.positionId;
@@ -184,7 +205,8 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
             await journal.record({ event: 'cancel_intent', caseId, ticket, reason: 'unverified_protection' });
             const cleanup = await adapter.trade({ actionType: 'ORDER_CANCEL', orderId: String(ticket) });
             await journal.record({ event: 'cancel_result', caseId, ticket, httpOk: cleanup.httpOk,
-              numericCode: cleanup.json?.numericCode ?? null, transportError: !!cleanup.transportError });
+              numericCode: cleanup.json?.numericCode ?? null, transportError: !!cleanup.transportError,
+              transportErrorDetail: cleanup.transportErrorDetail ?? null });
           }
         }
         return { status: 'UNKNOWN', reason: 'protection unverified; reconcile planned cleanup before any further trade', caseId, ticket };
@@ -193,27 +215,39 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
         || snapshot.deals.some(d => String(d.orderId) === String(ticket)))
         return { status: 'UNKNOWN', reason: 'unexpected fill or partial exposure', caseId, ticket };
       if (config.enableModification) {
-        const fresh = await adapter.quote(config.symbol);
-        validateQuote(fresh, { side: test.side, maxAgeMs: config.maxQuoteAgeMs,
-          maxFutureSkewMs: config.maxFutureSkewMs, now: now(), currencyValidated: true });
-        const modify = buildSafePendingModification(order, expected, spec, fresh);
-        await journal.record({ event: 'modify_intent', caseId, ticket, request: modify });
-        const changed = await adapter.trade(modify);
-        await journal.record({ event: 'modify_result', caseId, ticket, httpOk: changed.httpOk,
-          numericCode: changed.json?.numericCode ?? null, transportError: !!changed.transportError });
-        if (classifyTradeResponse({ httpOk: changed.httpOk, numericCode: changed.json?.numericCode,
-          transportError: changed.transportError }) !== 'acknowledged_unverified')
-          return { status: 'UNKNOWN', reason: 'modification failed or ambiguous; read-only reconcile', caseId, ticket };
-        expected.request = { ...expected.request, stopLoss: modify.stopLoss };
-        const revision = complete(await adapter.snapshot(ticket));
-        const revisedOrder = revision.orders.find(o => String(o.id) === String(ticket));
-        const revisionStatus = verifyPending(revisedOrder, expected, spec);
-        await journal.record({ event: 'modify_readback', caseId, ticket, status: revisionStatus,
-          stopLoss: revisedOrder?.stopLoss, takeProfit: revisedOrder?.takeProfit,
-          currentVolume: revisedOrder?.currentVolume });
-        if (revisionStatus !== 'confirmed' || revision.deals.some(d => String(d.orderId) === String(ticket))
-          || revision.positions.some(p => p.symbol === config.symbol))
-          return { status: 'UNKNOWN', reason: 'modified order/protection/residual unverified', caseId, ticket };
+        // L02: a freeze/distance/stale-quote condition means DO NOT MODIFY — not fence the account.
+        // Local pre-validation failure skips the optional amendment (journaled) and proceeds to the
+        // planned cancel; the order keeps its confirmed protection. Once a modify POST has left,
+        // ambiguity still fences (UNKNOWN) exactly as before.
+        let modify = null;
+        try {
+          const fresh = await adapter.quote(config.symbol);
+          validateQuote(fresh, { side: test.side, maxAgeMs: config.maxQuoteAgeMs,
+            maxFutureSkewMs: config.maxFutureSkewMs, now: now(), currencyValidated: true });
+          modify = buildSafePendingModification(order, expected, spec, fresh);
+        } catch (e) {
+          await journal.record({ event: 'modification_skipped', caseId, ticket, reason: String(e.message).slice(0, 160) });
+        }
+        if (modify) {
+          await journal.record({ event: 'modify_intent', caseId, ticket, request: modify });
+          const changed = await adapter.trade(modify);
+          await journal.record({ event: 'modify_result', caseId, ticket, httpOk: changed.httpOk,
+            numericCode: changed.json?.numericCode ?? null, transportError: !!changed.transportError,
+            transportErrorDetail: changed.transportErrorDetail ?? null });
+          if (classifyTradeResponse({ httpOk: changed.httpOk, numericCode: changed.json?.numericCode,
+            transportError: changed.transportError }) !== 'acknowledged_unverified')
+            return { status: 'UNKNOWN', reason: 'modification failed or ambiguous; read-only reconcile', caseId, ticket };
+          expected.request = { ...expected.request, stopLoss: modify.stopLoss };
+          const revision = complete(await adapter.snapshot(ticket));
+          const revisedOrder = revision.orders.find(o => String(o.id) === String(ticket));
+          const revisionStatus = verifyPending(revisedOrder, expected, spec);
+          await journal.record({ event: 'modify_readback', caseId, ticket, status: revisionStatus,
+            stopLoss: revisedOrder?.stopLoss, takeProfit: revisedOrder?.takeProfit,
+            currentVolume: revisedOrder?.currentVolume });
+          if (revisionStatus !== 'confirmed' || revision.deals.some(d => String(d.orderId) === String(ticket))
+            || revision.positions.some(p => p.symbol === config.symbol))
+            return { status: 'UNKNOWN', reason: 'modified order/protection/residual unverified', caseId, ticket };
+        }
       }
       // Re-read immediately before cleanup. No partial-residual cancellation.
       const before = complete(await adapter.snapshot(ticket));
@@ -225,7 +259,8 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
       await journal.record({ event: 'cancel_intent', caseId, ticket });
       const cancel = await adapter.trade({ actionType: 'ORDER_CANCEL', orderId: String(ticket) });
       await journal.record({ event: 'cancel_result', caseId, ticket, httpOk: cancel.httpOk,
-        numericCode: cancel.json?.numericCode ?? null, transportError: !!cancel.transportError });
+        numericCode: cancel.json?.numericCode ?? null, transportError: !!cancel.transportError,
+        transportErrorDetail: cancel.transportErrorDetail ?? null });
       if (classifyTradeResponse({ httpOk: cancel.httpOk, numericCode: cancel.json?.numericCode,
         transportError: cancel.transportError }) !== 'acknowledged_unverified')
         return { status: 'UNKNOWN', reason: 'cancel not conclusively acknowledged', caseId, ticket };
@@ -241,7 +276,8 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
       await journal.record({ event: 'close_intent', caseId, positionId });
       const close = await adapter.trade({ actionType: 'POSITION_CLOSE_ID', positionId: String(positionId) });
       await journal.record({ event: 'close_result', caseId, positionId, httpOk: close.httpOk,
-        numericCode: close.json?.numericCode ?? null, transportError: !!close.transportError });
+        numericCode: close.json?.numericCode ?? null, transportError: !!close.transportError,
+        transportErrorDetail: close.transportErrorDetail ?? null });
       if (classifyTradeResponse({ httpOk: close.httpOk, numericCode: close.json?.numericCode,
         transportError: close.transportError }) !== 'acknowledged_unverified')
         return { status: 'UNKNOWN', reason: 'close not conclusively acknowledged', caseId, positionId };
@@ -251,7 +287,11 @@ export async function runCase({ caseId, config, adapter, journal, now = () => Da
       openOrders: finalState.orders?.filter(o => o.symbol === config.symbol).map(o => o.id),
       positions: finalState.positions?.filter(p => p.symbol === config.symbol).map(p => p.id),
       historyStates: finalState.historyOrders?.map(o => ({ id: o.id, state: o.state, volume: o.volume, currentVolume: o.currentVolume })),
-      linkedDeals: finalState.deals?.filter(d => String(d.orderId) === String(ticket)).map(d => ({ id: d.id, volume: d.volume })) });
+      // L03 complete volume accounting: a market case's CLOSING deal links by positionId,
+      // not by the opening ticket, so match either — otherwise close evidence is silently lost.
+      linkedDeals: finalState.deals?.filter(d => String(d.orderId) === String(ticket)
+        || (positionId != null && String(d.positionId) === String(positionId)))
+        .map(d => ({ id: d.id, orderId: d.orderId, positionId: d.positionId, volume: d.volume })) });
     return { status: 'REVIEW_REQUIRED', reason: 'REST evidence is not proof of finality; reconcile and independently review', caseId, ticket, positionId };
   } catch (e) {
     await journal.record({ event: sent ? 'incident_unknown' : 'preflight_refused', caseId, reason: String(e.message).slice(0, 160) });
